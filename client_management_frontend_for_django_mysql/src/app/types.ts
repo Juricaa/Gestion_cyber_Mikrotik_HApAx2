@@ -1,0 +1,75 @@
+export type ServiceType = "wifi" | "console";
+export type SessionType = "open" | "countdown";
+export type SessionStatus = "active" | "paused" | "terminated" | "archived";
+export type NotificationSound =
+  | "default"
+  | "beep"
+  | "bell"
+  | "chime"
+  | "alert"
+  | "digital"
+  | "success";
+export interface Product {
+  name: string;
+  defaultPrice: number;
+  icon: string;
+}
+
+export interface Session {
+  id: string;
+  clientName: string;
+  serviceType: ServiceType;
+  serviceName: string;
+  sessionType: SessionType;
+  startTime: string;
+  endTime?: string;
+  status: SessionStatus;
+  elapsedTime: number;
+  /** Secondes précises renvoyées par le backend. Utilisé pour figer correctement pause + montant. */
+  elapsedSeconds?: number;
+  totalCost?: number;
+  plannedDuration?: number | null;
+  archived?: boolean;
+  isPaused?: boolean;
+  pausedAt?: string | null;
+  totalPausedSeconds?: number;
+  stationId?: number;
+  voucherCode?: string;
+  mikrotikUsername?: string;
+  /** Date exacte où MikroTik a vu le voucher utilisé. Null = client pas encore connecté. */
+  lastResumedAt?: string | null;
+  /** True quand le voucher est déjà utilisé et que le timer peut tourner. */
+  timerStarted?: boolean;
+  /** True quand la session WiFi est créée mais le client n'a pas encore utilisé le code. */
+  waitingForHotspot?: boolean;
+  remainingSeconds?: number;
+}
+
+export interface RateSetting {
+  hourlyRate: number;
+  minCharge: number;
+}
+
+export interface AppSettings {
+  rates: {
+    wifi: RateSetting;
+    console: RateSetting;
+  };
+  notifications: {
+    enabled: boolean;
+    volume: number;
+    repeat: boolean;
+    sound: NotificationSound;
+  };
+  products: Product[];
+}
+
+export interface Statistics {
+  totalSessions: number;
+  activeSessions: number;
+  completedSessions: number;
+  totalRevenue: number;
+  revenueByService: Record<string, number>;
+  revenueByDesignation: Record<string, number>;
+  sessions: Session[];
+}

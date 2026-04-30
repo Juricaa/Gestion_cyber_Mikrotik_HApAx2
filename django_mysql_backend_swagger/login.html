@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Connexion WiFi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card {
+      width: 90%;
+      max-width: 380px;
+      background: #111827;
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      text-align: center;
+    }
+
+    p {
+      text-align: center;
+      color: #cbd5e1;
+      font-size: 14px;
+    }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 14px;
+      margin-top: 14px;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: #ffffff;
+      font-size: 18px;
+      text-align: center;
+      text-transform: uppercase;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #22c55e;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 12px;
+      background: #22c55e;
+      color: #052e16;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #16a34a;
+    }
+
+    .error {
+      margin-top: 12px;
+      color: #fecaca;
+      background: #7f1d1d;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .footer {
+      margin-top: 18px;
+      font-size: 12px;
+      color: #94a3b8;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Connexion WiFi</h1>
+    <p>Entrez votre code ticket WiFi</p>
+
+    <form action="$(link-login-only)" method="post" onsubmit="prepareLogin()">
+      <input type="hidden" name="dst" value="https://www.google.com/">
+      <input type="hidden" name="popup" value="true">
+
+      <!-- MikroTik reçoit username et password ici -->
+      <input type="hidden" id="username" name="username">
+      <input type="hidden" id="password" name="password">
+
+      <!-- Un seul champ visible pour le voucher -->
+      <input id="voucher" type="text" placeholder="Ex: 1461EB" autocomplete="off" required>
+
+      <button type="submit">Se connecter</button>
+    </form>
+
+    $(if error)
+    <div class="error">
+      Code voucher invalide ou expiré.
+    </div>
+    $(endif)
+
+
+    <div class="footer">
+      Ticket fourni par l'administrateur
+    </div>
+  </div>
+
+  <script>
+    function prepareLogin() {
+      var code = document.getElementById("voucher").value.trim().toUpperCase();
+
+      document.getElementById("username").value = code;
+      document.getElementById("password").value = code;
+      // On indique que l'utilisateur a essayé de se connecter
+    sessionStorage.setItem("login_attempt", "1");
+  }
+
+  // Afficher l'erreur seulement après une tentative de connexion
+  window.onload = function () {
+    var errorBox = document.getElementById("errorBox");
+    var attempted = sessionStorage.getItem("login_attempt");
+
+    if (errorBox && attempted === "1") {
+      errorBox.style.display = "block";
+    }
+  };
+  </script>
+</body>
+
+</html>

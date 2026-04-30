@@ -1,0 +1,165 @@
+CONFIG ROUTEUR VERS PROJET WEB
+
+Configuration MikroTik hAP ax²
+Dans terminal MikroTik :
+
+/ip service set www disabled=no port=80
+/ip hotspot user profile add name=paid_wifi shared-users=1 rate-limit=5M/5M
+
+Crée un utilisateur API : /user add name=django_api password="Informaticien2025#" group=full
+
+
+Pour tester manuellement :
+
+/ip hotspot user add name=WIFI-EDEFBD password=WIFI-EDEFBD profile=paid_wifi
+
+
+5. Page login Hotspot MikroTik
+
+À mettre dans MikroTik :
+
+Files > hotspot > login.html
+
+
+Vérifie dans Terminal MikroTik :
+
+/file print
+
+Puis :
+
+/ip hotspot profile print detail
+
+
+
+Si ce n’est pas configuré, fais :
+
+/ip hotspot profile set [find name=default] html-directory=hotspot
+
+Ou si ton profil Hotspot s’appelle autrement :
+
+/ip hotspot profile print
+
+Puis remplace default par le bon nom.
+
+Solution par Terminal MikroTik
+
+
+
+
+Tape cette commande :
+
+/file set [find name="login.html"] name="hotspot/login.html"
+
+Puis vérifie :
+
+/file set [find name="login.html"] name="hotspot/login.html"
+
+Tu dois voir quelque chose comme :
+
+hotspot
+hotspot/login.html
+
+
+
+
+
+Vérifie ton device-mode
+
+Dans Terminal MikroTik :
+
+/system/device-mode/print
+
+Tu vas probablement voir :
+
+mode: home
+hotspot: no
+0 X name="portail"
+
+2. Active le mode advanced avec Hotspot
+
+Tape :
+
+/system/device-mode/update mode=advanced hotspot=yes
+
+À ce moment-là, tu dois faire une confirmation physique.
+
+Méthode simple :
+
+1. Tape la commande.
+2. Débranche l’alimentation du MikroTik.
+3. Attends 5 secondes.
+4. Rebranche.
+
+
+
+
+1. Active le Hotspot
+mais avant d'activer il faut bypasser l'admin pour n'est pas exlus connection
+Tape :
+
+3. Avant de réactiver, ajoute ton PC admin en bypass
+
+Ton PC/backend est :
+
+192.168.88.252
+
+Ajoute-le dans IP Binding pour qu’il ne soit jamais bloqué par le Hotspot :
+
+/ip hotspot ip-binding add address=192.168.88.252 type=bypassed comment="PC admin Django backend"
+
+Tu peux aussi bypasser le routeur lui-même si besoin :
+
+/ip hotspot ip-binding add address=192.168.88.1 type=bypassed comment="Routeur admin"
+
+activer : /ip hotspot enable [find name="portail"]
+
+3. Vérifie le fichier
+
+Tu as déjà bon :
+
+hotspot/login.html
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
