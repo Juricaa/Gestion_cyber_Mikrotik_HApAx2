@@ -27,7 +27,7 @@ function buildBackendBaseUrl() {
   const forceConfigured = String(import.meta.env.VITE_API_BASE_URL_FORCE || "false") === "true";
 
   if (typeof window === "undefined") {
-    return configured || "http://127.0.0.1:8000";
+    return configured || "http://127.0.0.1:800";
   }
 
   const frontendHost = window.location.hostname;
