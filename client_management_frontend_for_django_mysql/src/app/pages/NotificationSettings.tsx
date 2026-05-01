@@ -13,7 +13,7 @@ export function NotificationSettings() {
 
   const notificationSettings = settings.notifications || {
     enabled: true,
-    volume: 70,
+    volume: 80,
     repeat: true,
     sound: "default",
   };
