@@ -488,8 +488,9 @@ export function ActiveSessions() {
       const sessionId = String(session.id);
       const backendStatus = String((session as any).status || "").toLowerCase();
 
-      if (
+       if (
         backendStatus !== "active" ||
+        session.serviceType !== "wifi" ||
         session.sessionType !== "countdown" ||
         isSessionPaused(session) ||
         isWaitingForHotspotSession(session) ||
