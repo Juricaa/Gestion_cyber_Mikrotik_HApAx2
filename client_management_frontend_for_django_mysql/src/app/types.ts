@@ -43,6 +43,9 @@ export interface Session {
   /** True quand la session WiFi est créée mais le client n'a pas encore utilisé le code. */
   waitingForHotspot?: boolean;
   remainingSeconds?: number;
+
+  /** Moment frontend où les valeurs backend elapsedSeconds / remainingSeconds ont été reçues. */
+  timerSyncedAt?: number;
 }
 
 export interface RateSetting {

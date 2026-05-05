@@ -27,7 +27,7 @@ function buildBackendBaseUrl() {
   const forceConfigured = String(import.meta.env.VITE_API_BASE_URL_FORCE || "false") === "true";
 
   if (typeof window === "undefined") {
-    return configured || "http://127.0.0.1:800";
+    return configured || "http://127.0.0.1:8000";
   }
 
   const frontendHost = window.location.hostname;
@@ -136,6 +136,7 @@ interface BackendSession {
   hourly_rate_snapshot?: number | string;
   minimum_price_snapshot?: number | string;
   final_price?: number | string | null;
+  timer_snapshot_at?: string;
 }
 
 export interface BackendSale {
@@ -291,19 +292,35 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
 
 function computeElapsedSeconds(raw: BackendSession) {
   const consumed = parseNumber(raw.consumed_seconds, 0);
+  const pausedDurationSeconds = parseNumber(raw.paused_duration_seconds, 0);
 
-  if (raw.status === "active" && raw.last_resumed_at) {
-    const delta = Math.max(
-      0,
-      Math.floor((Date.now() - new Date(raw.last_resumed_at).getTime()) / 1000)
-    );
-
-    return consumed + delta;
+  // Le backend renvoie déjà consumed_seconds courant dans le serializer.
+  // Donc ici on ne rajoute JAMAIS le delta depuis last_resumed_at, sinon le
+  // chrono avance deux fois après refresh / changement de page / reprise.
+  if (isWaitingForHotspot(raw)) {
+    return 0;
   }
 
-  // Si last_resumed_at est null, le voucher n'a pas encore été utilisé
-  // ou la session est en pause : on garde uniquement le compteur backend.
-  return consumed;
+  if (raw.status !== "active") {
+    return Math.max(0, Math.floor(consumed));
+  }
+
+  // Compatibilité avec les anciennes sessions console créées avant correction
+  // backend : si last_resumed_at est null et consumed_seconds est encore 0,
+  // on prend une valeur snapshot depuis started_at. Cette valeur sera ensuite
+  // avancée côté ActiveSessions avec timerSyncedAt, pas avec last_resumed_at.
+  if (consumed <= 0 && raw.service_type !== "wifi" && raw.started_at) {
+    const startedAt = new Date(raw.started_at).getTime();
+
+    if (!Number.isNaN(startedAt)) {
+      return Math.max(
+        0,
+        Math.floor((Date.now() - startedAt) / 1000) - pausedDurationSeconds
+      );
+    }
+  }
+
+  return Math.max(0, Math.floor(consumed));
 }
 
 function isWaitingForHotspot(raw: BackendSession) {
@@ -343,6 +360,7 @@ function computeCurrentPrice(raw: BackendSession) {
 }
 
 function mapSession(raw: any): Session {
+  const timerSyncedAt = Date.now();
   const backendStatus = String(raw.status || "").toLowerCase();
 
   const frontendStatus =
@@ -365,28 +383,40 @@ function mapSession(raw: any): Session {
   const rawSession = raw as BackendSession;
   const waitingForHotspot = isWaitingForHotspot(rawSession);
 
-  const elapsedSecondsFromClock = waitingForHotspot
-    ? 0
-    : computeElapsedSeconds(rawSession);
-
-  let elapsedSeconds = elapsedSecondsFromClock;
+  // Snapshot backend au moment où le frontend reçoit la réponse.
+  // Pour les sessions actives, ActiveSessions ajoutera seulement
+  // Date.now() - timerSyncedAt.
+  let elapsedSeconds = waitingForHotspot ? 0 : computeElapsedSeconds(rawSession);
   let remainingSeconds = 0;
 
   if (sessionMode === "countdown" && countdownSeconds > 0) {
     if (waitingForHotspot) {
-      // Session WiFi créée, mais code pas encore utilisé : le compte à rebours
-      // affiche la durée complète et ne descend pas.
       remainingSeconds = remainingSecondsFromBackend > 0
         ? remainingSecondsFromBackend
         : countdownSeconds;
       elapsedSeconds = 0;
     } else if (backendStatus === "paused") {
-      // En pause, on affiche la valeur figée par le backend.
-      remainingSeconds = remainingSecondsFromBackend;
+      // En pause, ces deux valeurs doivent rester strictement figées.
+      remainingSeconds = Math.max(0, remainingSecondsFromBackend);
       elapsedSeconds = Math.max(0, countdownSeconds - remainingSeconds);
     } else {
-      // En actif, le chrono reste juste après refresh / changement d'adresse IP.
-      remainingSeconds = countdownSeconds - elapsedSecondsFromClock;
+      // En actif, le backend envoie remaining_seconds courant.
+      // On ne recalcule pas depuis last_resumed_at ici pour éviter le double comptage.
+      remainingSeconds = Math.max(0, remainingSecondsFromBackend);
+
+      // Si le compteur est déjà dépassé, le backend ne peut pas stocker une
+      // valeur négative dans remaining_seconds. On reconstruit donc le dépassement
+      // avec consumed_seconds snapshot pour que l'affichage +temps ne revienne
+      // pas à zéro à chaque polling.
+      if (elapsedSeconds >= countdownSeconds) {
+        remainingSeconds = countdownSeconds - elapsedSeconds;
+      }
+
+      // Compatibilité : si l'API renvoie remaining_seconds manquant, on fallback
+      // depuis elapsedSeconds snapshot.
+      if (remainingSecondsFromBackend <= 0 && elapsedSeconds < countdownSeconds) {
+        remainingSeconds = Math.max(0, countdownSeconds - elapsedSeconds);
+      }
     }
   }
 
@@ -411,8 +441,6 @@ function mapSession(raw: any): Session {
 
     elapsedTime: Math.floor(elapsedSeconds / 60),
 
-    // Garder les secondes précises : elapsedTime en minutes perd les secondes
-    // et provoque des bugs d'affichage/prix pendant une pause.
     elapsedSeconds: Math.max(0, Math.floor(elapsedSeconds)),
 
     totalCost: computeCurrentPrice(raw),
@@ -426,12 +454,8 @@ function mapSession(raw: any): Session {
 
     isPaused: backendStatus === "paused",
 
-    // Si ton backend envoie paused_at, utilise-le.
-    // Sinon null est acceptable, car le chrono peut se figer avec status = paused.
     pausedAt: raw.paused_at || raw.pausedAt || null,
 
-    // Pause totale déjà calculée côté backend.
-    // La pause actuelle n'est ajoutée qu'au moment de resume.
     totalPausedSeconds: pausedDurationSeconds,
 
     stationId: raw.station,
@@ -442,7 +466,9 @@ function mapSession(raw: any): Session {
     waitingForHotspot,
 
     remainingSeconds:
-      sessionMode === "countdown" ? Math.max(0, Math.floor(remainingSeconds)) : 0,
+      sessionMode === "countdown" ? Math.floor(remainingSeconds) : 0,
+
+    timerSyncedAt,
   };
 }
 

@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 from .models import Session, SessionEvent
 
@@ -64,6 +65,7 @@ class SessionSerializer(serializers.ModelSerializer):
 
         current_consumed_seconds = int(instance.total_seconds_now() or 0)
         data["consumed_seconds"] = current_consumed_seconds
+        data["timer_snapshot_at"] = timezone.now().isoformat()
 
         if instance.session_mode == Session.SessionMode.COUNTDOWN:
             countdown_seconds = int(instance.countdown_seconds or 0)

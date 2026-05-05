@@ -40,10 +40,45 @@ class Session(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def is_waiting_for_hotspot_timer(self):
+        """
+        Cas WiFi : session créée dans Django mais voucher pas encore utilisé
+        dans MikroTik /ip hotspot active. Dans ce cas le chrono ne tourne pas.
+        """
+        return (
+            self.service_type == "wifi"
+            and self.status == self.Status.ACTIVE
+            and bool(self.mikrotik_username or self.voucher_code)
+            and self.last_resumed_at is None
+            and int(self.consumed_seconds or 0) == 0
+        )
+
     def total_seconds_now(self):
-        total_seconds = self.consumed_seconds
-        if self.status == self.Status.ACTIVE and self.last_resumed_at:
-            total_seconds += max(0, int((timezone.now() - self.last_resumed_at).total_seconds()))
+        total_seconds = int(self.consumed_seconds or 0)
+
+        if self.status != self.Status.ACTIVE:
+            return total_seconds
+
+        if self.is_waiting_for_hotspot_timer():
+            return 0
+
+        if self.last_resumed_at:
+            total_seconds += max(
+                0,
+                int((timezone.now() - self.last_resumed_at).total_seconds()),
+            )
+            return total_seconds
+
+        # Compatibilité avec les anciennes sessions console/open créées avant
+        # correction, où last_resumed_at était parfois NULL.
+        if self.started_at:
+            elapsed_from_start = max(
+                0,
+                int((timezone.now() - self.started_at).total_seconds())
+                - int(self.paused_duration_seconds or 0),
+            )
+            return max(total_seconds, elapsed_from_start)
+
         return total_seconds
 
 
@@ -51,11 +86,16 @@ class Session(models.Model):
         return self.session_mode == self.SessionMode.COUNTDOWN
 
     def consume_running_time(self):
-        if self.status == self.Status.ACTIVE and self.last_resumed_at:
-            delta = max(0, int((timezone.now() - self.last_resumed_at).total_seconds()))
-            self.consumed_seconds += delta
+        if self.status == self.Status.ACTIVE:
+            current_seconds = int(self.total_seconds_now() or 0)
+            self.consumed_seconds = current_seconds
+
             if self.is_countdown():
-                self.remaining_seconds = max(0, self.remaining_seconds - delta)
+                self.remaining_seconds = max(
+                    0,
+                    int(self.countdown_seconds or 0) - current_seconds,
+                )
+
             self.last_resumed_at = None
 
     def compute_final_price(self):

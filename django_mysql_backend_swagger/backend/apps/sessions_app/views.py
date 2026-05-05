@@ -424,16 +424,25 @@ class SessionViewSet(viewsets.ModelViewSet):
                 else 0
             )
 
+            now = timezone.now()
+            timer_starts_now = service_type != "wifi"
+
             session = serializer.save(
                 created_by=self.request.user,
                 hourly_rate_snapshot=hourly_rate,
                 minimum_price_snapshot=minimum_price,
-                # IMPORTANT:
-                # le voucher est créé maintenant, mais le chrono / compte à rebours
-                # ne démarre pas encore. Il démarre quand le client utilise le code
-                # et apparaît dans MikroTik /ip/hotspot/active.
-                last_resumed_at=None,
+                # WiFi : le chrono démarre quand MikroTik confirme le voucher actif.
+                # Console : le chrono démarre immédiatement à la création.
+                started_at=now,
+                last_resumed_at=now if timer_starts_now else None,
                 remaining_seconds=remaining_seconds,
+                expected_end_at=(
+                    now + timedelta(seconds=int(countdown_seconds or 0))
+                    if timer_starts_now
+                    and session_mode == Session.SessionMode.COUNTDOWN
+                    and countdown_seconds
+                    else None
+                ),
             )
 
             try:
@@ -450,7 +459,11 @@ class SessionViewSet(viewsets.ModelViewSet):
                 session=session,
                 event_type=SessionEvent.EventType.START,
                 user=self.request.user,
-                note="Voucher créé. Le chrono démarre quand le client utilise le code sur le portail Hotspot.",
+                note=(
+                    "Voucher créé. Le chrono démarre quand le client utilise le code sur le portail Hotspot."
+                    if service_type == "wifi"
+                    else "Session console démarrée immédiatement."
+                ),
             )
 
             AuditLog.objects.create(
@@ -648,7 +661,7 @@ class SessionViewSet(viewsets.ModelViewSet):
 
         now = timezone.now()
 
-        if session.status == Session.Status.ACTIVE and session.last_resumed_at:
+        if session.status == Session.Status.ACTIVE:
             session.consume_running_time()
             self._cap_countdown_after_timeup(session)
 
