@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
-import { Monitor, Gamepad2, History, Settings, User, ShieldCheck, LogOut, BarChart3, Bell, Archive, ShoppingCart, Loader2, UserCog } from "lucide-react";
+import { Monitor, Gamepad2, History, Settings, User, ShieldCheck, LogOut, BarChart3, Bell, Archive, ShoppingCart, Loader2, UserCog, ListVideo } from "lucide-react";
 import { cn } from "./ui/utils";
 import { useAuth } from "../context/AuthContext";
 import { useState, useEffect } from "react";
@@ -68,6 +68,7 @@ export function Layout() {
   const userNavItems = [
     { path: "/active", icon: Monitor, label: "Sessions actives" },
     { path: "/sales", icon: ShoppingCart, label: "Ventes produits" },
+    { path: "/sales-history", icon: ListVideo, label: "Historique achats" },
     { path: "/history", icon: History, label: "Historique sessions" },
     { path: "/notifications", icon: Bell, label: "Notifications" },
   ];
@@ -76,6 +77,7 @@ export function Layout() {
     { path: "/", icon: BarChart3, label: "Tableau de bord" },
     { path: "/active", icon: Monitor, label: "Sessions actives" },
     { path: "/sales", icon: ShoppingCart, label: "Ventes produits" },
+    { path: "/sales-history", icon: ListVideo, label: "Historique achats" },
     { path: "/history", icon: History, label: "Historique sessions" },
     { path: "/archives", icon: Archive, label: "Archives" },
     { path: "/settings", icon: Settings, label: "Paramètres" },

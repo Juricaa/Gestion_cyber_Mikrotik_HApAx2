@@ -8,6 +8,7 @@ import { Archives } from "./pages/Archives";
 import { Settings } from "./pages/Settings";
 import { NotificationSettings } from "./pages/NotificationSettings";
 import { FilmSales } from "./pages/FilmSales";
+import { FilmSalesHistory } from "./pages/FilmSalesHistory";
 import { UserManagement } from "./pages/UserManagement";
 import { Layout } from "./components/Layout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -39,6 +40,7 @@ export const router = createBrowserRouter([
       },
       { path: "active", element: <ActiveSessions /> },
       { path: "sales", element: <FilmSales /> },
+      { path: "sales-history", element: <FilmSalesHistory /> },
       { path: "history", element: <History /> },
       { 
         path: "archives", 
