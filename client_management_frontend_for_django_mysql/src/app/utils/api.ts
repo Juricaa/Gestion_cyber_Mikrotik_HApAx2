@@ -137,6 +137,8 @@ interface BackendSession {
   minimum_price_snapshot?: number | string;
   final_price?: number | string | null;
   timer_snapshot_at?: string;
+  timer_started?: boolean;
+  waiting_for_hotspot?: boolean;
 }
 
 export interface BackendSale {
@@ -326,6 +328,29 @@ function computeElapsedSeconds(raw: BackendSession) {
 function isWaitingForHotspot(raw: BackendSession) {
   const serviceType = raw.service_type || "wifi";
   const consumed = parseNumber(raw.consumed_seconds, 0);
+  const countdownSeconds = parseNumber(raw.countdown_seconds, 0);
+  const remainingSeconds = parseNumber(raw.remaining_seconds, 0);
+
+  // Nouveau backend : on fait confiance aux champs explicites.
+  // Cela évite qu'un changement de page remette le WiFi countdown à la durée initiale.
+  if (typeof raw.waiting_for_hotspot === "boolean") {
+    return raw.waiting_for_hotspot;
+  }
+
+  if (typeof raw.timer_started === "boolean") {
+    return !raw.timer_started;
+  }
+
+  // Compatibilité ancien backend : si remaining_seconds a déjà diminué,
+  // le timer a forcément démarré, même si last_resumed_at est absent/null.
+  const countdownAlreadyProgressed =
+    countdownSeconds > 0 &&
+    remainingSeconds > 0 &&
+    remainingSeconds < countdownSeconds;
+
+  if (countdownAlreadyProgressed || consumed > 0) {
+    return false;
+  }
 
   return (
     raw.status === "active" &&
@@ -462,11 +487,14 @@ function mapSession(raw: any): Session {
     voucherCode: raw.voucher_code || undefined,
     mikrotikUsername: raw.mikrotik_username || undefined,
     lastResumedAt: raw.last_resumed_at || null,
-    timerStarted: !waitingForHotspot,
+    timerStarted:
+      typeof raw.timer_started === "boolean" ? raw.timer_started : !waitingForHotspot,
     waitingForHotspot,
 
     remainingSeconds:
       sessionMode === "countdown" ? Math.floor(remainingSeconds) : 0,
+
+    timerSnapshotAt: raw.timer_snapshot_at || undefined,
 
     timerSyncedAt,
   };

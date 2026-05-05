@@ -72,13 +72,37 @@ function isVisibleActiveSession(session: Session) {
 function isWaitingForHotspotSession(session: Session) {
   const status = String((session as any).status || "").toLowerCase();
 
+  // Nouveau comportement : si api.ts/backend a déjà déterminé l'état,
+  // on ne le recalcule pas ici. Cela évite le bug où, après changement de page,
+  // un WiFi countdown revient à sa durée initiale parce que lastResumedAt est null.
+  if (typeof session.waitingForHotspot === "boolean") {
+    return session.waitingForHotspot;
+  }
+
+  const plannedSeconds = Math.max(0, Math.floor((session.plannedDuration || 0) * 60));
+  const remainingSeconds =
+    typeof session.remainingSeconds === "number"
+      ? Math.max(0, Math.floor(session.remainingSeconds))
+      : plannedSeconds;
+
+  const countdownAlreadyProgressed =
+    session.sessionType === "countdown" &&
+    plannedSeconds > 0 &&
+    remainingSeconds > 0 &&
+    remainingSeconds < plannedSeconds;
+
+  const elapsedAlreadyProgressed =
+    Math.max(0, Math.floor(session.elapsedSeconds || 0)) > 0;
+
+  if (countdownAlreadyProgressed || elapsedAlreadyProgressed || session.timerStarted) {
+    return false;
+  }
+
   return Boolean(
-    session.waitingForHotspot ||
-      (session.serviceType === "wifi" &&
-        status === "active" &&
-        Boolean(session.voucherCode || session.mikrotikUsername) &&
-        !session.lastResumedAt &&
-        Math.max(0, Math.floor(session.elapsedSeconds || 0)) === 0)
+    session.serviceType === "wifi" &&
+      status === "active" &&
+      Boolean(session.voucherCode || session.mikrotikUsername) &&
+      !session.lastResumedAt
   );
 }
 

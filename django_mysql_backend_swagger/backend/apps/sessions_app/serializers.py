@@ -63,9 +63,13 @@ class SessionSerializer(serializers.ModelSerializer):
         """
         data = super().to_representation(instance)
 
+        waiting_for_hotspot = bool(instance.is_waiting_for_hotspot_timer())
         current_consumed_seconds = int(instance.total_seconds_now() or 0)
+
         data["consumed_seconds"] = current_consumed_seconds
         data["timer_snapshot_at"] = timezone.now().isoformat()
+        data["waiting_for_hotspot"] = waiting_for_hotspot
+        data["timer_started"] = not waiting_for_hotspot
 
         if instance.session_mode == Session.SessionMode.COUNTDOWN:
             countdown_seconds = int(instance.countdown_seconds or 0)

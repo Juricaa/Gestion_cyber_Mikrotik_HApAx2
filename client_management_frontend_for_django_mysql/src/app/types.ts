@@ -44,6 +44,9 @@ export interface Session {
   waitingForHotspot?: boolean;
   remainingSeconds?: number;
 
+  /** Timestamp backend du snapshot timer, utile pour debug/synchronisation WiFi. */
+  timerSnapshotAt?: string;
+
   /** Moment frontend où les valeurs backend elapsedSeconds / remainingSeconds ont été reçues. */
   timerSyncedAt?: number;
 }
