@@ -55,6 +55,7 @@ services:
       dockerfile: Dockerfile
     container_name: cyber_backup
     restart: unless-stopped
+    stop_grace_period: 5m
     environment:
       MYSQL_HOST: db
       MYSQL_PORT: 3306
@@ -63,7 +64,9 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       TZ: Indian/Antananarivo
     volumes:
-      - ./backups:/backup
+      - type: bind
+        source: ./backups
+        target: /backup
     depends_on:
       db:
         condition: service_healthy
