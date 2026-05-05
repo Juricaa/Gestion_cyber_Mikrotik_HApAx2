@@ -49,5 +49,24 @@ services:
     depends_on:
       - backend
 
+  backup:
+    build:
+      context: ./docker/backup
+      dockerfile: Dockerfile
+    container_name: cyber_backup
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Indian/Antananarivo
+    volumes:
+      - ./backups:/backup
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   cyber_db_data:
