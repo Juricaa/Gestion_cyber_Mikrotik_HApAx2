@@ -36,7 +36,9 @@ export function History() {
   const [processing, setProcessing] = useState(false);
 
   const completedSessions = useMemo(() => {
-    let filtered = sessions.filter((s) => s.status === "terminated" && !s.archived);
+    let filtered = sessions.filter(
+      (s) => s.status === "terminated" && !s.archived && s.paymentStatus === "paid"
+    );
 
     // Filter by search query
     if (searchQuery.trim()) {
@@ -115,7 +117,7 @@ export function History() {
     <div className="p-4 sm:p-6 lg:p-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Historique</h1>
-        <p className="text-gray-600 mt-1">Toutes les sessions terminées</p>
+        <p className="text-gray-600 mt-1">Toutes les sessions terminées et payées</p>
       </div>
 
       {/* Stats summary */}
@@ -124,7 +126,7 @@ export function History() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-gray-900">{stats.count}</div>
-              <p className="text-sm text-gray-500">Sessions terminées</p>
+              <p className="text-sm text-gray-500">Sessions payées</p>
             </CardContent>
           </Card>
           <Card>

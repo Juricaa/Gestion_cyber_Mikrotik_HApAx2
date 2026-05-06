@@ -139,6 +139,8 @@ interface BackendSession {
   timer_snapshot_at?: string;
   timer_started?: boolean;
   waiting_for_hotspot?: boolean;
+  payment_status?: "pending" | "paid";
+  paid_at?: string | null;
 }
 
 export interface BackendSale {
@@ -400,6 +402,7 @@ function mapSession(raw: any): Session {
           : "active";
 
   const sessionMode = raw.session_mode || raw.sessionType || raw.session_type;
+  const paymentStatus = raw.payment_status === "pending" ? "pending" : "paid";
 
   const countdownSeconds = parseNumber(raw.countdown_seconds, 0);
   const remainingSecondsFromBackend = parseNumber(raw.remaining_seconds, 0);
@@ -469,6 +472,9 @@ function mapSession(raw: any): Session {
     elapsedSeconds: Math.max(0, Math.floor(elapsedSeconds)),
 
     totalCost: computeCurrentPrice(raw),
+
+    paymentStatus,
+    paidAt: raw.paid_at || null,
 
     plannedDuration:
       countdownSeconds > 0
@@ -727,6 +733,14 @@ export async function terminateSessionApi(id: string) {
   return apiRequest<BackendSession>(`/sessions/${id}/finish/`, {
     method: "POST",
   });
+}
+
+export async function paySessionApi(id: string) {
+  const updated = await apiRequest<BackendSession>(`/sessions/${id}/pay/`, {
+    method: "POST",
+  });
+
+  return mapSession(updated);
 }
 
 export async function pauseSessionApi(id: string) {

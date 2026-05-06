@@ -17,6 +17,7 @@ import {
   fetchStations,
   loadAppSettings,
   pauseSessionApi,
+  paySessionApi,
   resumeSessionApi,
   saveAppSettings,
   terminateSessionApi,
@@ -43,6 +44,7 @@ interface AppContextType {
 
   pauseSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<void>;
+  paySession: (id: string) => Promise<void>;
 
   updateSettings: (settings: AppSettings) => Promise<void>;
 
@@ -226,6 +228,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await refreshData();
   };
 
+  const paySession = async (id: string) => {
+    await paySessionApi(id);
+    await refreshData();
+  };
+
   const pauseSession = async (id: string) => {
     await pauseSessionApi(id);
 
@@ -335,6 +342,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         terminateSession,
         pauseSession,
         resumeSession,
+        paySession,
 
         updateSettings,
         getNextServiceName,

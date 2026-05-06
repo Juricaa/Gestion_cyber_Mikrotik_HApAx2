@@ -1,6 +1,7 @@
 export type ServiceType = "wifi" | "console";
 export type SessionType = "open" | "countdown";
 export type SessionStatus = "active" | "paused" | "terminated" | "archived";
+export type PaymentStatus = "pending" | "paid";
 export type NotificationSound =
   | "default"
   | "beep"
@@ -28,6 +29,9 @@ export interface Session {
   /** Secondes précises renvoyées par le backend. Utilisé pour figer correctement pause + montant. */
   elapsedSeconds?: number;
   totalCost?: number;
+  /** pending = session terminée mais paiement pas encore confirmé. */
+  paymentStatus?: PaymentStatus;
+  paidAt?: string | null;
   plannedDuration?: number | null;
   archived?: boolean;
   isPaused?: boolean;

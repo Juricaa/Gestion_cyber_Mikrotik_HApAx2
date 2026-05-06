@@ -34,6 +34,7 @@ import {
   Pause,
   Play,
   Copy,
+  CreditCard,
 } from "lucide-react";
 
 import { toast } from "sonner";
@@ -60,12 +61,25 @@ function isBackendPausedSession(session: Session) {
   );
 }
 
+function isAwaitingPaymentSession(session: Session) {
+  const status = String((session as any).status || "").toLowerCase();
+
+  return Boolean(
+    !session.archived &&
+      status === "terminated" &&
+      session.paymentStatus === "pending"
+  );
+}
+
 function isVisibleActiveSession(session: Session) {
   const status = String((session as any).status || "").toLowerCase();
 
   return (
     !session.archived &&
-    (status === "active" || status === "paused" || Boolean(session.isPaused))
+    (status === "active" ||
+      status === "paused" ||
+      Boolean(session.isPaused) ||
+      isAwaitingPaymentSession(session))
   );
 }
 
@@ -123,12 +137,14 @@ export function ActiveSessions() {
     terminateSession,
     pauseSession,
     resumeSession,
+    paySession,
     fetchSessions,
     addSession,
     getNextServiceName,
   } = useApp();
 
   const [terminating, setTerminating] = useState<string | null>(null);
+  const [paying, setPaying] = useState<string | null>(null);
   const [pausing, setPausing] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
@@ -694,6 +710,31 @@ export function ActiveSessions() {
     }
   };
 
+  const handlePaySession = async (session: Session) => {
+    const sessionId = String(session.id);
+
+    setPaying(sessionId);
+
+    try {
+      stopNotificationForSession(sessionId);
+      await paySession(sessionId);
+
+      setElapsedSecondsById((previous) => {
+        const next = { ...previous };
+        delete next[sessionId];
+        return next;
+      });
+
+      toast.success(`Paiement confirme : ${session.clientName} historise`);
+      await fetchSessions();
+    } catch (error) {
+      console.error("Erreur confirmation paiement:", error);
+      toast.error("Erreur lors de la confirmation du paiement");
+    } finally {
+      setPaying(null);
+    }
+  };
+
   const handleTerminate = async (session: Session) => {
     const timeInfo = getTimeInfo(session);
     const totalCost = calculateCost(session, timeInfo.elapsedMinutes);
@@ -733,7 +774,7 @@ export function ActiveSessions() {
         return next;
       });
 
-      toast.success("Session terminée avec succès");
+      toast.success("Session terminée : paiement en attente");
       setSelectedSession(null);
       await fetchSessions();
     } catch (error) {
@@ -766,7 +807,10 @@ export function ActiveSessions() {
 
   const printTicket = (session: Session) => {
     const timeInfo = getTimeInfo(session);
-    const totalCost = calculateCost(session, timeInfo.elapsedMinutes);
+    const totalCost =
+      isAwaitingPaymentSession(session) && typeof session.totalCost === "number"
+        ? session.totalCost
+        : calculateCost(session, timeInfo.elapsedMinutes);
     const paused = isSessionPaused(session);
     const voucherCode = getSessionVoucher(session);
 
@@ -929,21 +973,28 @@ export function ActiveSessions() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {activeSessions.map((session) => {
             const timeInfo = getTimeInfo(session);
-            const cost = calculateCost(session, timeInfo.elapsedMinutes);
             const paused = isSessionPaused(session);
             const waitingHotspot = isWaitingForHotspotSession(session);
+            const awaitingPayment = isAwaitingPaymentSession(session);
+            const cost =
+              awaitingPayment && typeof session.totalCost === "number"
+                ? session.totalCost
+                : calculateCost(session, timeInfo.elapsedMinutes);
 
             return (
               <Card
                 key={session.id}
                 className={cn(
+                  awaitingPayment && "border-emerald-500 border-2 bg-emerald-50/50 shadow-lg",
                   waitingHotspot && "border-slate-400 border-2 bg-slate-50/60",
                   paused && "border-blue-500 border-2 bg-blue-50/40",
-                  !waitingHotspot &&
+                  !awaitingPayment &&
+                    !waitingHotspot &&
                     !paused &&
                     timeInfo.isExpired &&
                     "border-red-500 border-2 shadow-lg animate-pulse",
-                  !waitingHotspot &&
+                  !awaitingPayment &&
+                    !waitingHotspot &&
                     !paused &&
                     timeInfo.isWarning &&
                     "border-yellow-500 border-2"
@@ -980,32 +1031,37 @@ export function ActiveSessions() {
 
                     <Badge
                       variant={
-                        timeInfo.isExpired && !paused
+                        !awaitingPayment && timeInfo.isExpired && !paused
                           ? "destructive"
                           : "default"
                       }
                       className={cn(
                         "font-bold px-2 py-1",
+                        awaitingPayment && "bg-emerald-600 text-white",
                         waitingHotspot && "bg-slate-600 text-white",
                         !waitingHotspot && paused && "bg-blue-500 text-white",
-                        !waitingHotspot &&
+                        !awaitingPayment &&
+                          !waitingHotspot &&
                           !paused &&
                           timeInfo.isWarning &&
                           "bg-yellow-500 text-black",
-                        !waitingHotspot &&
+                        !awaitingPayment &&
+                          !waitingHotspot &&
                           !paused &&
                           !timeInfo.isExpired &&
                           !timeInfo.isWarning &&
                           "bg-green-500 text-white"
                       )}
                     >
-                      {waitingHotspot
-                        ? "En attente client"
-                        : paused
-                          ? "Pause"
-                          : session.sessionType === "countdown"
-                            ? "Compte à rebours"
-                            : "Ouvert"}
+                      {awaitingPayment
+                        ? "À payer"
+                        : waitingHotspot
+                          ? "En attente client"
+                          : paused
+                            ? "Pause"
+                            : session.sessionType === "countdown"
+                              ? "Compte à rebours"
+                              : "Ouvert"}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -1014,17 +1070,21 @@ export function ActiveSessions() {
                   <div
                     className={cn(
                       "text-center p-4 rounded-lg",
+                      awaitingPayment && "bg-emerald-50 border-2 border-emerald-200",
                       waitingHotspot && "bg-slate-50 border-2 border-slate-200",
                       !waitingHotspot && paused && "bg-blue-50 border-2 border-blue-200",
-                      !waitingHotspot &&
+                      !awaitingPayment &&
+                        !waitingHotspot &&
                         !paused &&
                         timeInfo.isExpired &&
                         "bg-red-50 border-2 border-red-200",
-                      !waitingHotspot &&
+                      !awaitingPayment &&
+                        !waitingHotspot &&
                         !paused &&
                         timeInfo.isWarning &&
                         "bg-yellow-50 border-2 border-yellow-200",
-                      !waitingHotspot &&
+                      !awaitingPayment &&
+                        !waitingHotspot &&
                         !paused &&
                         !timeInfo.isExpired &&
                         !timeInfo.isWarning &&
@@ -1035,11 +1095,13 @@ export function ActiveSessions() {
                       <Clock
                         className={cn(
                           "w-5 h-5",
+                          awaitingPayment && "text-emerald-600",
                           waitingHotspot && "text-slate-600",
                           !waitingHotspot && paused && "text-blue-600",
-                          !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
-                          !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
-                          !waitingHotspot &&
+                          !awaitingPayment && !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
+                          !awaitingPayment && !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
+                          !awaitingPayment &&
+                            !waitingHotspot &&
                             !paused &&
                             !timeInfo.isExpired &&
                             !timeInfo.isWarning &&
@@ -1048,10 +1110,12 @@ export function ActiveSessions() {
                       />
 
                       <p className="text-sm text-gray-600">
-                        {waitingHotspot
-                          ? "En attente connexion client"
-                          : paused
-                            ? "Temps en pause"
+                        {awaitingPayment
+                          ? "Session terminée"
+                          : waitingHotspot
+                            ? "En attente connexion client"
+                            : paused
+                              ? "Temps en pause"
                             : session.sessionType === "countdown"
                               ? timeInfo.isExpired
                                 ? "Temps dépassé"
@@ -1063,11 +1127,13 @@ export function ActiveSessions() {
                     <p
                       className={cn(
                         "text-3xl font-bold",
+                        awaitingPayment && "text-emerald-700",
                         waitingHotspot && "text-slate-700",
                         !waitingHotspot && paused && "text-blue-600",
-                        !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
-                        !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
-                        !waitingHotspot &&
+                        !awaitingPayment && !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
+                        !awaitingPayment && !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
+                        !awaitingPayment &&
+                          !waitingHotspot &&
                           !paused &&
                           !timeInfo.isExpired &&
                           !timeInfo.isWarning &&
@@ -1080,7 +1146,7 @@ export function ActiveSessions() {
 
                   <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
                     <span className="text-sm text-gray-600">
-                      Coût actuel
+                      {awaitingPayment ? "Montant à payer" : "Coût actuel"}
                     </span>
 
                     <span className="text-xl font-bold text-blue-600">
@@ -1131,47 +1197,77 @@ export function ActiveSessions() {
                     </div>
                   )}
 
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handlePauseResume(session)}
-                      disabled={pausing === String(session.id) || waitingHotspot}
-                      className="flex-1 w-full"
-                    >
-                      {paused ? (
-                        <>
-                          <Play className="w-4 h-4 mr-1" />
-                          Reprendre
-                        </>
-                      ) : (
-                        <>
-                          <Pause className="w-4 h-4 mr-1" />
-                          Pause
-                        </>
-                      )}
-                    </Button>
+                  {awaitingPayment ? (
+                    <div className="space-y-3">
+                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                        Session terminée. Confirme le paiement pour envoyer cette session dans l'historique.
+                      </div>
 
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => printTicket(session)}
-                      className="flex-1 w-full"
-                    >
-                      <Printer className="w-4 h-4 mr-1" />
-                      Ticket
-                    </Button>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => printTicket(session)}
+                          className="flex-1 w-full"
+                        >
+                          <Printer className="w-4 h-4 mr-1" />
+                          Ticket
+                        </Button>
 
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleTerminate(session)}
-                      className="flex-1 w-full"
-                    >
-                      <StopCircle className="w-4 h-4 mr-1" />
-                      Fin
-                    </Button>
-                  </div>
+                        <Button
+                          size="sm"
+                          onClick={() => handlePaySession(session)}
+                          disabled={paying === String(session.id)}
+                          className="flex-1 w-full bg-emerald-600 hover:bg-emerald-700"
+                        >
+                          <CreditCard className="w-4 h-4 mr-1" />
+                          {paying === String(session.id) ? "Paiement..." : "Payer"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePauseResume(session)}
+                        disabled={pausing === String(session.id) || waitingHotspot}
+                        className="flex-1 w-full"
+                      >
+                        {paused ? (
+                          <>
+                            <Play className="w-4 h-4 mr-1" />
+                            Reprendre
+                          </>
+                        ) : (
+                          <>
+                            <Pause className="w-4 h-4 mr-1" />
+                            Pause
+                          </>
+                        )}
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => printTicket(session)}
+                        className="flex-1 w-full"
+                      >
+                        <Printer className="w-4 h-4 mr-1" />
+                        Ticket
+                      </Button>
+
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleTerminate(session)}
+                        className="flex-1 w-full"
+                      >
+                        <StopCircle className="w-4 h-4 mr-1" />
+                        Fin
+                      </Button>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );
