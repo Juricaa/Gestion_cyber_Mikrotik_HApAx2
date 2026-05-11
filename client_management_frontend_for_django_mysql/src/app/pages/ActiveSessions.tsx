@@ -34,7 +34,6 @@ import {
   Pause,
   Play,
   Copy,
-  CreditCard,
 } from "lucide-react";
 
 import { toast } from "sonner";
@@ -61,63 +60,20 @@ function isBackendPausedSession(session: Session) {
   );
 }
 
-function isAwaitingPaymentSession(session: Session) {
-  const status = String((session as any).status || "").toLowerCase();
-
-  return Boolean(
-    !session.archived &&
-      status === "terminated" &&
-      session.paymentStatus === "pending"
-  );
-}
-
 function isVisibleActiveSession(session: Session) {
   const status = String((session as any).status || "").toLowerCase();
 
   return (
     !session.archived &&
-    (status === "active" ||
-      status === "paused" ||
-      Boolean(session.isPaused) ||
-      isAwaitingPaymentSession(session))
+    (status === "active" || status === "paused" || Boolean(session.isPaused))
   );
 }
 
 function isWaitingForHotspotSession(session: Session) {
-  const status = String((session as any).status || "").toLowerCase();
-
-  // Nouveau comportement : si api.ts/backend a déjà déterminé l'état,
-  // on ne le recalcule pas ici. Cela évite le bug où, après changement de page,
-  // un WiFi countdown revient à sa durée initiale parce que lastResumedAt est null.
-  if (typeof session.waitingForHotspot === "boolean") {
-    return session.waitingForHotspot;
-  }
-
-  const plannedSeconds = Math.max(0, Math.floor((session.plannedDuration || 0) * 60));
-  const remainingSeconds =
-    typeof session.remainingSeconds === "number"
-      ? Math.max(0, Math.floor(session.remainingSeconds))
-      : plannedSeconds;
-
-  const countdownAlreadyProgressed =
-    session.sessionType === "countdown" &&
-    plannedSeconds > 0 &&
-    remainingSeconds > 0 &&
-    remainingSeconds < plannedSeconds;
-
-  const elapsedAlreadyProgressed =
-    Math.max(0, Math.floor(session.elapsedSeconds || 0)) > 0;
-
-  if (countdownAlreadyProgressed || elapsedAlreadyProgressed || session.timerStarted) {
-    return false;
-  }
-
-  return Boolean(
-    session.serviceType === "wifi" &&
-      status === "active" &&
-      Boolean(session.voucherCode || session.mikrotikUsername) &&
-      !session.lastResumedAt
-  );
+  // Source de vérité: backend/api.ts.
+  // Ne pas recalculer ici avec lastResumedAt, sinon le mode simulation
+  // peut ré-afficher "En attente client" par erreur.
+  return session.waitingForHotspot === true;
 }
 
 function formatDuration(totalSeconds: number) {
@@ -225,112 +181,91 @@ export function ActiveSessions() {
       return 0;
     }
 
-    const status = String((session as any).status || "").toLowerCase();
-    const backendElapsedSeconds =
-      typeof session.elapsedSeconds === "number"
-        ? Math.max(0, Math.floor(session.elapsedSeconds))
-        : Math.max(0, Math.floor((session.elapsedTime || 0) * 60));
-
-    // Pause / terminé / archivé : afficher la valeur backend figée.
-    if (isBackendPausedSession(session) || status !== "active") {
-      if (
-        session.sessionType === "countdown" &&
-        session.plannedDuration &&
-        typeof session.remainingSeconds === "number"
-      ) {
-        const totalPlannedSeconds = session.plannedDuration * 60;
-        return Math.max(0, totalPlannedSeconds - session.remainingSeconds);
-      }
-
-      return backendElapsedSeconds;
+    // Priorité au compteur précis renvoyé par Django.
+    // C'est indispensable pour une session WiFi dont le timer démarre seulement
+    // quand MikroTik voit le voucher dans /ip hotspot active.
+    if (typeof session.elapsedSeconds === "number") {
+      return Math.max(0, Math.floor(session.elapsedSeconds));
     }
 
-    // IMPORTANT : api.ts reçoit déjà consumed_seconds courant du backend.
-    // On avance seulement depuis le moment où cette valeur a été synchronisée
-    // côté frontend. Ne pas recalculer depuis lastResumedAt, sinon après pause/
-    // reprise ou changement de page le temps est compté deux fois.
-    if (typeof session.timerSyncedAt === "number") {
-      const deltaSinceSync = Math.max(
-        0,
-        Math.floor((Date.now() - session.timerSyncedAt) / 1000)
-      );
+    if (
+      session.sessionType === "countdown" &&
+      session.plannedDuration &&
+      typeof session.remainingSeconds === "number"
+    ) {
+      const totalPlannedSeconds = session.plannedDuration * 60;
 
-      return backendElapsedSeconds + deltaSinceSync;
+      return Math.max(0, totalPlannedSeconds - session.remainingSeconds);
     }
 
-    // Fallback ancien format si timerSyncedAt n'existe pas.
     const startTime = new Date(session.startTime).getTime();
 
-    if (!Number.isNaN(startTime)) {
+    if (!Number.isNaN(startTime) && session.lastResumedAt) {
       const backendPausedSeconds = session.totalPausedSeconds || 0;
-      const elapsedFromStart = Math.max(
+
+      return Math.max(
         0,
         Math.floor((Date.now() - startTime) / 1000) - backendPausedSeconds
       );
-
-      return Math.max(backendElapsedSeconds, elapsedFromStart);
     }
 
-    return backendElapsedSeconds;
+    return Math.max(0, Math.floor((session.elapsedTime || 0) * 60));
   }, []);
 
-  /**
-   * Correction bug secondes :
-   * Avant, le chrono faisait `currentSeconds + 1`. Quand la page était
-   * démontée/remontée ou quand `fetchSessions()` resynchronisait les sessions,
-   * le même tick pouvait être compté deux fois ou repartir avec une valeur
-   * décalée.
-   *
-   * Maintenant, à chaque seconde, on recalcule le temps depuis les timestamps
-   * backend (`started_at`, `last_resumed_at`, `consumed_seconds`) au lieu
-   * d'incrémenter un compteur local fragile.
-   */
-  const syncElapsedSeconds = useCallback(() => {
+  useEffect(() => {
     setElapsedSecondsById((previous) => {
       const next: Record<string, number> = {};
 
       activeSessions.forEach((session) => {
         const sessionId = String(session.id);
-        const backendSeconds = getInitialElapsedSeconds(session);
-        const backendPaused = isBackendPausedSession(session);
-        const localPaused = localPausedIds.has(sessionId);
+        const backendInitialSeconds = getInitialElapsedSeconds(session);
 
         if (isWaitingForHotspotSession(session)) {
           next[sessionId] = 0;
-          return;
+        } else if (isSessionPaused(session)) {
+          next[sessionId] = backendInitialSeconds;
+        } else {
+          // Si Django détecte le voucher après quelques secondes,
+          // on resynchronise immédiatement au compteur backend au lieu de repartir de 0.
+          next[sessionId] = Math.max(
+            previous[sessionId] ?? backendInitialSeconds,
+            backendInitialSeconds
+          );
         }
-
-        // Pause locale immédiate : on fige la dernière valeur affichée
-        // pendant que le backend confirme status=paused.
-        if (localPaused && !backendPaused) {
-          next[sessionId] = previous[sessionId] ?? backendSeconds;
-          return;
-        }
-
-        // Si le backend confirme la pause, on affiche sa valeur figée.
-        // Sinon on recalcule depuis l'horloge réelle.
-        next[sessionId] = backendSeconds;
       });
 
       return next;
     });
-  }, [activeSessions, getInitialElapsedSeconds, localPausedIds]);
+  }, [activeSessions, getInitialElapsedSeconds, isSessionPaused]);
 
   useEffect(() => {
-    syncElapsedSeconds();
-
     const interval = setInterval(() => {
-      syncElapsedSeconds();
+      setElapsedSecondsById((previous) => {
+        const next = { ...previous };
+
+        activeSessions.forEach((session) => {
+          const sessionId = String(session.id);
+
+          const currentSeconds =
+            next[sessionId] ?? getInitialElapsedSeconds(session);
+
+          if (isWaitingForHotspotSession(session)) {
+            next[sessionId] = 0;
+          } else if (isSessionPaused(session)) {
+            next[sessionId] = currentSeconds;
+          } else {
+            next[sessionId] = currentSeconds + 1;
+          }
+        });
+
+        return next;
+      });
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [syncElapsedSeconds]);
+  }, [activeSessions, getInitialElapsedSeconds, isSessionPaused]);
 
   useEffect(() => {
-    // Quand on revient sur la page Active Sessions, on resynchronise tout de suite
-    // avec le backend au lieu d'attendre le prochain intervalle.
-    fetchSessions();
-
     const interval = setInterval(() => {
       fetchSessions();
     }, 10000);
@@ -345,9 +280,6 @@ export function ActiveSessions() {
   };
 
   const getTimeInfo = (session: Session) => {
-    const sessionId = String(session.id);
-    const backendPaused = isBackendPausedSession(session);
-    const localPaused = localPausedIds.has(sessionId);
     const paused = isSessionPaused(session);
     const waitingHotspot = isWaitingForHotspotSession(session);
 
@@ -363,29 +295,17 @@ export function ActiveSessions() {
             ? session.remainingSeconds
             : totalPlannedSeconds;
         elapsedSeconds = 0;
-      } else if (paused) {
-        // Pause confirmée backend : on affiche exactement remaining_seconds.
-        // Pause locale en attente de la réponse backend : on fige le snapshot
-        // pris au moment du clic Pause, sinon le compteur peut revenir en arrière.
-        if (backendPaused && typeof session.remainingSeconds === "number") {
-          remainingSeconds = Math.max(0, Math.floor(session.remainingSeconds));
-          elapsedSeconds = Math.max(0, totalPlannedSeconds - remainingSeconds);
-        } else if (localPaused) {
-          elapsedSeconds = getElapsedSeconds(session);
-          remainingSeconds = Math.max(0, totalPlannedSeconds - elapsedSeconds);
-        } else {
-          remainingSeconds = Math.max(0, totalPlannedSeconds - elapsedSeconds);
-        }
-      } else if (typeof session.remainingSeconds === "number") {
-        // Actif : remaining_seconds est un snapshot backend.
-        // On enlève seulement le delta depuis timerSyncedAt.
-        const deltaSinceSync =
-          typeof session.timerSyncedAt === "number"
-            ? Math.max(0, Math.floor((Date.now() - session.timerSyncedAt) / 1000))
-            : 0;
+      }
 
-        remainingSeconds = Math.floor(session.remainingSeconds) - deltaSinceSync;
-        elapsedSeconds = totalPlannedSeconds - remainingSeconds;
+      /**
+       * Correction importante :
+       * Si la session est en pause et que le backend donne remainingSeconds,
+       * on affiche exactement remainingSeconds du backend.
+       * Donc si DB = 34s et status=paused, le frontend reste à 34s.
+       */
+      if (!waitingHotspot && paused && typeof session.remainingSeconds === "number") {
+        remainingSeconds = Math.max(0, session.remainingSeconds);
+        elapsedSeconds = Math.max(0, totalPlannedSeconds - remainingSeconds);
       }
 
       const isExpired = !waitingHotspot && !paused && remainingSeconds <= 0;
@@ -400,8 +320,8 @@ export function ActiveSessions() {
         isWarning,
         isPaused: paused,
         isWaiting: waitingHotspot,
-        elapsedMinutes: Math.floor(Math.max(0, elapsedSeconds) / 60),
-        elapsedSeconds: Math.max(0, elapsedSeconds),
+        elapsedMinutes: Math.floor(elapsedSeconds / 60),
+        elapsedSeconds,
       };
     }
 
@@ -414,8 +334,8 @@ export function ActiveSessions() {
       isWarning: false,
       isPaused: paused,
       isWaiting: waitingHotspot,
-      elapsedMinutes: Math.floor(Math.max(0, elapsedSeconds) / 60),
-      elapsedSeconds: Math.max(0, elapsedSeconds),
+      elapsedMinutes: Math.floor(elapsedSeconds / 60),
+      elapsedSeconds,
     };
   };
 
@@ -566,7 +486,6 @@ export function ActiveSessions() {
 
       if (
         backendStatus !== "active" ||
-        session.serviceType !== "wifi" ||
         session.sessionType !== "countdown" ||
         isSessionPaused(session) ||
         isWaitingForHotspotSession(session) ||
@@ -710,31 +629,6 @@ export function ActiveSessions() {
     }
   };
 
-  const handlePaySession = async (session: Session) => {
-    const sessionId = String(session.id);
-
-    setPaying(sessionId);
-
-    try {
-      stopNotificationForSession(sessionId);
-      await paySession(sessionId);
-
-      setElapsedSecondsById((previous) => {
-        const next = { ...previous };
-        delete next[sessionId];
-        return next;
-      });
-
-      toast.success(`Paiement confirme : ${session.clientName} historise`);
-      await fetchSessions();
-    } catch (error) {
-      console.error("Erreur confirmation paiement:", error);
-      toast.error("Erreur lors de la confirmation du paiement");
-    } finally {
-      setPaying(null);
-    }
-  };
-
   const handleTerminate = async (session: Session) => {
     const timeInfo = getTimeInfo(session);
     const totalCost = calculateCost(session, timeInfo.elapsedMinutes);
@@ -774,7 +668,7 @@ export function ActiveSessions() {
         return next;
       });
 
-      toast.success("Session terminée : paiement en attente");
+      toast.success("Session terminée avec succès");
       setSelectedSession(null);
       await fetchSessions();
     } catch (error) {
@@ -807,10 +701,7 @@ export function ActiveSessions() {
 
   const printTicket = (session: Session) => {
     const timeInfo = getTimeInfo(session);
-    const totalCost =
-      isAwaitingPaymentSession(session) && typeof session.totalCost === "number"
-        ? session.totalCost
-        : calculateCost(session, timeInfo.elapsedMinutes);
+    const totalCost = calculateCost(session, timeInfo.elapsedMinutes);
     const paused = isSessionPaused(session);
     const voucherCode = getSessionVoucher(session);
 
@@ -973,28 +864,21 @@ export function ActiveSessions() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {activeSessions.map((session) => {
             const timeInfo = getTimeInfo(session);
+            const cost = calculateCost(session, timeInfo.elapsedMinutes);
             const paused = isSessionPaused(session);
             const waitingHotspot = isWaitingForHotspotSession(session);
-            const awaitingPayment = isAwaitingPaymentSession(session);
-            const cost =
-              awaitingPayment && typeof session.totalCost === "number"
-                ? session.totalCost
-                : calculateCost(session, timeInfo.elapsedMinutes);
 
             return (
               <Card
                 key={session.id}
                 className={cn(
-                  awaitingPayment && "border-emerald-500 border-2 bg-emerald-50/50 shadow-lg",
                   waitingHotspot && "border-slate-400 border-2 bg-slate-50/60",
                   paused && "border-blue-500 border-2 bg-blue-50/40",
-                  !awaitingPayment &&
-                    !waitingHotspot &&
+                  !waitingHotspot &&
                     !paused &&
                     timeInfo.isExpired &&
                     "border-red-500 border-2 shadow-lg animate-pulse",
-                  !awaitingPayment &&
-                    !waitingHotspot &&
+                  !waitingHotspot &&
                     !paused &&
                     timeInfo.isWarning &&
                     "border-yellow-500 border-2"
@@ -1031,37 +915,32 @@ export function ActiveSessions() {
 
                     <Badge
                       variant={
-                        !awaitingPayment && timeInfo.isExpired && !paused
+                        timeInfo.isExpired && !paused
                           ? "destructive"
                           : "default"
                       }
                       className={cn(
                         "font-bold px-2 py-1",
-                        awaitingPayment && "bg-emerald-600 text-white",
                         waitingHotspot && "bg-slate-600 text-white",
                         !waitingHotspot && paused && "bg-blue-500 text-white",
-                        !awaitingPayment &&
-                          !waitingHotspot &&
+                        !waitingHotspot &&
                           !paused &&
                           timeInfo.isWarning &&
                           "bg-yellow-500 text-black",
-                        !awaitingPayment &&
-                          !waitingHotspot &&
+                        !waitingHotspot &&
                           !paused &&
                           !timeInfo.isExpired &&
                           !timeInfo.isWarning &&
                           "bg-green-500 text-white"
                       )}
                     >
-                      {awaitingPayment
-                        ? "À payer"
-                        : waitingHotspot
-                          ? "En attente client"
-                          : paused
-                            ? "Pause"
-                            : session.sessionType === "countdown"
-                              ? "Compte à rebours"
-                              : "Ouvert"}
+                      {waitingHotspot
+                        ? "En attente client"
+                        : paused
+                          ? "Pause"
+                          : session.sessionType === "countdown"
+                            ? "Compte à rebours"
+                            : "Ouvert"}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -1070,21 +949,17 @@ export function ActiveSessions() {
                   <div
                     className={cn(
                       "text-center p-4 rounded-lg",
-                      awaitingPayment && "bg-emerald-50 border-2 border-emerald-200",
                       waitingHotspot && "bg-slate-50 border-2 border-slate-200",
                       !waitingHotspot && paused && "bg-blue-50 border-2 border-blue-200",
-                      !awaitingPayment &&
-                        !waitingHotspot &&
+                      !waitingHotspot &&
                         !paused &&
                         timeInfo.isExpired &&
                         "bg-red-50 border-2 border-red-200",
-                      !awaitingPayment &&
-                        !waitingHotspot &&
+                      !waitingHotspot &&
                         !paused &&
                         timeInfo.isWarning &&
                         "bg-yellow-50 border-2 border-yellow-200",
-                      !awaitingPayment &&
-                        !waitingHotspot &&
+                      !waitingHotspot &&
                         !paused &&
                         !timeInfo.isExpired &&
                         !timeInfo.isWarning &&
@@ -1095,13 +970,11 @@ export function ActiveSessions() {
                       <Clock
                         className={cn(
                           "w-5 h-5",
-                          awaitingPayment && "text-emerald-600",
                           waitingHotspot && "text-slate-600",
                           !waitingHotspot && paused && "text-blue-600",
-                          !awaitingPayment && !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
-                          !awaitingPayment && !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
-                          !awaitingPayment &&
-                            !waitingHotspot &&
+                          !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
+                          !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
+                          !waitingHotspot &&
                             !paused &&
                             !timeInfo.isExpired &&
                             !timeInfo.isWarning &&
@@ -1110,12 +983,10 @@ export function ActiveSessions() {
                       />
 
                       <p className="text-sm text-gray-600">
-                        {awaitingPayment
-                          ? "Session terminée"
-                          : waitingHotspot
-                            ? "En attente connexion client"
-                            : paused
-                              ? "Temps en pause"
+                        {waitingHotspot
+                          ? "En attente connexion client"
+                          : paused
+                            ? "Temps en pause"
                             : session.sessionType === "countdown"
                               ? timeInfo.isExpired
                                 ? "Temps dépassé"
@@ -1127,13 +998,11 @@ export function ActiveSessions() {
                     <p
                       className={cn(
                         "text-3xl font-bold",
-                        awaitingPayment && "text-emerald-700",
                         waitingHotspot && "text-slate-700",
                         !waitingHotspot && paused && "text-blue-600",
-                        !awaitingPayment && !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
-                        !awaitingPayment && !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
-                        !awaitingPayment &&
-                          !waitingHotspot &&
+                        !waitingHotspot && !paused && timeInfo.isExpired && "text-red-600",
+                        !waitingHotspot && !paused && timeInfo.isWarning && "text-yellow-600",
+                        !waitingHotspot &&
                           !paused &&
                           !timeInfo.isExpired &&
                           !timeInfo.isWarning &&
@@ -1146,7 +1015,7 @@ export function ActiveSessions() {
 
                   <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
                     <span className="text-sm text-gray-600">
-                      {awaitingPayment ? "Montant à payer" : "Coût actuel"}
+                      Coût actuel
                     </span>
 
                     <span className="text-xl font-bold text-blue-600">
@@ -1197,77 +1066,47 @@ export function ActiveSessions() {
                     </div>
                   )}
 
-                  {awaitingPayment ? (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-                        Session terminée. Confirme le paiement pour envoyer cette session dans l'historique.
-                      </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handlePauseResume(session)}
+                      disabled={pausing === String(session.id) || waitingHotspot}
+                      className="flex-1 w-full"
+                    >
+                      {paused ? (
+                        <>
+                          <Play className="w-4 h-4 mr-1" />
+                          Reprendre
+                        </>
+                      ) : (
+                        <>
+                          <Pause className="w-4 h-4 mr-1" />
+                          Pause
+                        </>
+                      )}
+                    </Button>
 
-                      <div className="flex flex-col sm:flex-row gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => printTicket(session)}
-                          className="flex-1 w-full"
-                        >
-                          <Printer className="w-4 h-4 mr-1" />
-                          Ticket
-                        </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => printTicket(session)}
+                      className="flex-1 w-full"
+                    >
+                      <Printer className="w-4 h-4 mr-1" />
+                      Ticket
+                    </Button>
 
-                        <Button
-                          size="sm"
-                          onClick={() => handlePaySession(session)}
-                          disabled={paying === String(session.id)}
-                          className="flex-1 w-full bg-emerald-600 hover:bg-emerald-700"
-                        >
-                          <CreditCard className="w-4 h-4 mr-1" />
-                          {paying === String(session.id) ? "Paiement..." : "Payer"}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handlePauseResume(session)}
-                        disabled={pausing === String(session.id) || waitingHotspot}
-                        className="flex-1 w-full"
-                      >
-                        {paused ? (
-                          <>
-                            <Play className="w-4 h-4 mr-1" />
-                            Reprendre
-                          </>
-                        ) : (
-                          <>
-                            <Pause className="w-4 h-4 mr-1" />
-                            Pause
-                          </>
-                        )}
-                      </Button>
-
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => printTicket(session)}
-                        className="flex-1 w-full"
-                      >
-                        <Printer className="w-4 h-4 mr-1" />
-                        Ticket
-                      </Button>
-
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => handleTerminate(session)}
-                        className="flex-1 w-full"
-                      >
-                        <StopCircle className="w-4 h-4 mr-1" />
-                        Fin
-                      </Button>
-                    </div>
-                  )}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleTerminate(session)}
+                      className="flex-1 w-full"
+                    >
+                      <StopCircle className="w-4 h-4 mr-1" />
+                      Fin
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             );

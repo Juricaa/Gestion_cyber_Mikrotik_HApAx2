@@ -1,4 +1,18 @@
 from .base import *
+import os
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+MIKROTIK_ENABLE_HOTSPOT_SYNC = env_bool(
+    "MIKROTIK_ENABLE_HOTSPOT_SYNC",
+    default=True,
+)
 
 DEBUG = True
 

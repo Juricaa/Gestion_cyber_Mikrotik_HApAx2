@@ -1,4 +1,5 @@
 from django.urls import path
+
 from .views import SessionViewSet
 
 
@@ -34,6 +35,10 @@ session_finish = SessionViewSet.as_view({
     "post": "finish",
 })
 
+session_pay = SessionViewSet.as_view({
+    "post": "pay",
+})
+
 session_archive = SessionViewSet.as_view({
     "post": "archive",
 })
@@ -49,5 +54,6 @@ urlpatterns = [
     path("<int:pk>/pause/", session_pause, name="sessions-pause"),
     path("<int:pk>/resume/", session_resume, name="sessions-resume"),
     path("<int:pk>/finish/", session_finish, name="sessions-finish"),
+    path("<int:pk>/pay/", session_pay, name="sessions-pay"),
     path("<int:pk>/archive/", session_archive, name="sessions-archive"),
 ]

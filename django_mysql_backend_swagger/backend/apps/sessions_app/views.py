@@ -1,10 +1,12 @@
 import json
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
-from rest_framework import permissions, serializers, viewsets
+from rest_framework import permissions, serializers, viewsets, status as drf_status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -24,7 +26,7 @@ class SessionCreateSerializer(SessionSerializer):
 
 class SessionViewSet(viewsets.ModelViewSet):
     queryset = (
-        Session.objects.select_related("station", "created_by", "closed_by")
+        Session.objects.select_related("station", "created_by", "closed_by", "paid_by")
         .prefetch_related("events")
         .all()
         .order_by("-created_at")
@@ -38,8 +40,6 @@ class SessionViewSet(viewsets.ModelViewSet):
         return SessionSerializer
 
     def list(self, request, *args, **kwargs):
-        # Polling frontend: à chaque chargement/liste, Django regarde MikroTik.
-        # Si le voucher vient d'être utilisé, le chrono commence selon uptime MikroTik.
         self._sync_mikrotik_active_sessions()
         return super().list(request, *args, **kwargs)
 
@@ -49,15 +49,16 @@ class SessionViewSet(viewsets.ModelViewSet):
         )
         return super().retrieve(request, *args, **kwargs)
 
+    def _mikrotik_enabled(self):
+        return str(
+            getattr(settings, "MIKROTIK_ENABLE_HOTSPOT_SYNC", True)
+        ).strip().lower() in ("1", "true", "yes", "on")
+
     def _voucher_limit_seconds(self, session: Session):
         if (
             session.session_mode == Session.SessionMode.COUNTDOWN
             and session.countdown_seconds > 0
         ):
-            # MikroTik compare limit-uptime avec le uptime total du voucher.
-            # Donc il faut garder la durée totale du ticket, pas remaining_seconds.
-            # Sinon après une pause/reprise, un voucher déjà utilisé peut expirer trop tôt
-            # ou ne pas se comporter correctement.
             return int(session.countdown_seconds)
         return None
 
@@ -67,13 +68,10 @@ class SessionViewSet(viewsets.ModelViewSet):
             and session.countdown_seconds > 0
             and session.remaining_seconds <= 0
         ):
-            # Quand le temps est écoulé, on verrouille la durée facturée
-            # à la durée prévue pour éviter que quelques secondes de retard
-            # côté navigateur gonflent le montant final.
             session.remaining_seconds = 0
             session.consumed_seconds = min(
-                int(session.consumed_seconds),
-                int(session.countdown_seconds),
+                int(session.consumed_seconds or 0),
+                int(session.countdown_seconds or 0),
             )
 
     def _sync_create_wifi_voucher(self, session: Session):
@@ -101,11 +99,6 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.mikrotik_user_id = created.get("id") or ""
 
     def _pause_note_from_active_users(self, active_users):
-        """
-        Sauvegarde l'IP/MAC du client avant de couper le Hotspot.
-        Sans ça, à la reprise on réactive seulement le voucher, mais le téléphone
-        ne revient pas automatiquement dans /ip hotspot active.
-        """
         if not active_users:
             return ""
 
@@ -149,9 +142,6 @@ class SessionViewSet(viewsets.ModelViewSet):
             return []
 
         active_users = client.find_active_users(session.mikrotik_username)
-
-        # disable_hotspot_user désactive le voucher ET coupe la connexion active.
-        # Ne pas appeler disconnect_active_user avant, sinon certains RouterOS renvoient 500.
         client.disable_hotspot_user(session.mikrotik_username)
 
         return active_users
@@ -167,10 +157,6 @@ class SessionViewSet(viewsets.ModelViewSet):
 
         password = session.voucher_code or session.mikrotik_username
 
-        # IMPORTANT pour les sessions compte à rebours:
-        # au resume, on recrée le voucher avec le temps RESTANT seulement.
-        # Si on réutilise le même voucher, RouterOS garde son ancien uptime et
-        # peut refuser/re-couper la connexion après reprise.
         if session.session_mode == Session.SessionMode.COUNTDOWN:
             if session.remaining_seconds <= 0:
                 return {
@@ -223,8 +209,6 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "result": login_result,
             }
         except MikroTikError as exc:
-            # Non bloquant: la session Django reprend quand même.
-            # On nettoie le host pour forcer une nouvelle redirection captive portal au prochain accès HTTP.
             try:
                 client.remove_hotspot_hosts(address=address, mac_address=mac_address)
             except MikroTikError:
@@ -240,8 +224,9 @@ class SessionViewSet(viewsets.ModelViewSet):
 
     def _finish_session_by_timeup(self, session: Session, now):
         """
-        Fin automatique quand le compte à rebours est fini.
-        Cette méthode peut être appelée pendant le polling /api/sessions/.
+        Fin automatique WiFi quand le compte à rebours est fini.
+        La session n'est PAS archivée ici.
+        Elle reste en COMPLETED + PENDING pour afficher le bouton Payer.
         """
         if session.status != Session.Status.ACTIVE:
             return
@@ -252,11 +237,13 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.ended_at = now
         session.status = Session.Status.COMPLETED
         session.final_price = session.compute_final_price()
+        session.payment_status = Session.PaymentStatus.PENDING
+        session.paid_at = None
+        session.paid_by = None
 
         try:
             self._sync_pause_or_finish_wifi(session)
         except Exception as exc:
-            # Le routeur peut déjà avoir coupé le voucher par limit-uptime.
             print(f"[MikroTik warning] auto timeup session {session.id}: {exc}")
 
         session.save(
@@ -267,6 +254,9 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "ended_at",
                 "status",
                 "final_price",
+                "payment_status",
+                "paid_at",
+                "paid_by",
                 "updated_at",
             ]
         )
@@ -279,7 +269,7 @@ class SessionViewSet(viewsets.ModelViewSet):
             session=session,
             event_type=SessionEvent.EventType.FINISH,
             user=None,
-            note="Fin automatique: compte à rebours terminé.",
+            note="Fin automatique: compte à rebours WiFi terminé. Paiement en attente.",
         )
 
         AuditLog.objects.create(
@@ -291,20 +281,11 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "final_price": str(session.final_price),
                 "consumed_seconds": session.consumed_seconds,
                 "remaining_seconds": session.remaining_seconds,
+                "payment_status": session.payment_status,
             },
         )
 
     def _sync_mikrotik_active_sessions(self, queryset=None):
-        """
-        Démarre le chrono/compte à rebours seulement quand MikroTik confirme que
-        le voucher est réellement utilisé dans /ip/hotspot/active.
-
-        Exemple:
-        - session créée à 08:15:00
-        - client utilise le code à 08:17:00
-        - Django détecte à 08:17:45 avec uptime MikroTik = 45s
-        => started_at et last_resumed_at deviennent 08:17:00.
-        """
         base_queryset = queryset or Session.objects.filter(
             service_type="wifi",
             status=Session.Status.ACTIVE,
@@ -320,9 +301,20 @@ class SessionViewSet(viewsets.ModelViewSet):
         if not sessions:
             return
 
+        now = timezone.now()
         client = get_mikrotik_client()
 
+        # Mode simulation sans MikroTik :
+        # si le WiFi countdown est terminé, on passe en COMPLETED/PENDING.
         if not client.enabled:
+            for session in sessions:
+                if (
+                    session.session_mode == Session.SessionMode.COUNTDOWN
+                    and int(session.countdown_seconds or 0) > 0
+                    and session.last_resumed_at is not None
+                    and int(session.total_seconds_now() or 0) >= int(session.countdown_seconds or 0)
+                ):
+                    self._finish_session_by_timeup(session, now)
             return
 
         try:
@@ -337,18 +329,25 @@ class SessionViewSet(viewsets.ModelViewSet):
             if username:
                 active_by_username.setdefault(username, active)
 
-        now = timezone.now()
-
         for session in sessions:
             active = active_by_username.get(session.mikrotik_username)
+
+            # Même si MikroTik a déjà coupé le client, si Django sait que le temps est fini,
+            # on met la session en paiement en attente.
+            if (
+                session.session_mode == Session.SessionMode.COUNTDOWN
+                and int(session.countdown_seconds or 0) > 0
+                and session.last_resumed_at is not None
+                and int(session.total_seconds_now() or 0) >= int(session.countdown_seconds or 0)
+            ):
+                self._finish_session_by_timeup(session, now)
+                continue
 
             if not active:
                 continue
 
             uptime_seconds = max(0, int(client.active_uptime_seconds(active)))
 
-            # Cas principal: session créée, voucher encore jamais utilisé.
-            # Le timer Django ne commence pas à la création, il commence à l'uptime MikroTik.
             if session.last_resumed_at is None and int(session.consumed_seconds or 0) == 0:
                 activation_time = now - timedelta(seconds=uptime_seconds)
                 session.started_at = activation_time
@@ -384,8 +383,6 @@ class SessionViewSet(viewsets.ModelViewSet):
                     },
                 )
 
-            # Après synchronisation, si le countdown est déjà terminé,
-            # on coupe la connexion et on ferme la session.
             if (
                 session.session_mode == Session.SessionMode.COUNTDOWN
                 and int(session.countdown_seconds or 0) > 0
@@ -402,6 +399,11 @@ class SessionViewSet(viewsets.ModelViewSet):
             })
 
         service_type = serializer.validated_data.get("service_type", "wifi")
+        session_mode = serializer.validated_data.get(
+            "session_mode",
+            Session.SessionMode.OPEN,
+        )
+        countdown_seconds = serializer.validated_data.get("countdown_seconds", 0)
 
         tariff = Tariff.objects.filter(
             service_type=service_type,
@@ -411,59 +413,85 @@ class SessionViewSet(viewsets.ModelViewSet):
         hourly_rate = tariff.hourly_rate if tariff else 0
         minimum_price = tariff.minimum_price if tariff else 0
 
+        mikrotik_enabled = self._mikrotik_enabled()
+        now = timezone.now()
+
+        # Console : chrono démarre immédiatement.
+        # WiFi avec MikroTik : attente client.
+        # WiFi sans MikroTik : simulation, chrono démarre immédiatement.
+        timer_starts_now = service_type != "wifi" or not mikrotik_enabled
+
+        remaining_seconds = (
+            int(countdown_seconds or 0)
+            if session_mode == Session.SessionMode.COUNTDOWN
+            else 0
+        )
+
+        expected_end_at = (
+            now + timedelta(seconds=remaining_seconds)
+            if timer_starts_now
+            and session_mode == Session.SessionMode.COUNTDOWN
+            and remaining_seconds > 0
+            else None
+        )
+
         with transaction.atomic():
-            countdown_seconds = serializer.validated_data.get("countdown_seconds", 0)
-            session_mode = serializer.validated_data.get(
-                "session_mode",
-                Session.SessionMode.OPEN,
-            )
-
-            remaining_seconds = (
-                countdown_seconds
-                if session_mode == Session.SessionMode.COUNTDOWN
-                else 0
-            )
-
-            now = timezone.now()
-            timer_starts_now = service_type != "wifi"
-
             session = serializer.save(
                 created_by=self.request.user,
                 hourly_rate_snapshot=hourly_rate,
                 minimum_price_snapshot=minimum_price,
-                # WiFi : le chrono démarre quand MikroTik confirme le voucher actif.
-                # Console : le chrono démarre immédiatement à la création.
                 started_at=now,
                 last_resumed_at=now if timer_starts_now else None,
+                consumed_seconds=0,
                 remaining_seconds=remaining_seconds,
-                expected_end_at=(
-                    now + timedelta(seconds=int(countdown_seconds or 0))
-                    if timer_starts_now
-                    and session_mode == Session.SessionMode.COUNTDOWN
-                    and countdown_seconds
-                    else None
-                ),
+                expected_end_at=expected_end_at,
+                status=Session.Status.ACTIVE,
             )
 
-            try:
-                self._sync_create_wifi_voucher(session)
-            except MikroTikError as exc:
-                raise serializers.ValidationError({"mikrotik": str(exc)})
+            if service_type == "wifi" and mikrotik_enabled:
+                try:
+                    self._sync_create_wifi_voucher(session)
+                    session.save(update_fields=[
+                        "voucher_code",
+                        "mikrotik_username",
+                        "mikrotik_user_id",
+                        "updated_at",
+                    ])
+                except MikroTikError as exc:
+                    raise serializers.ValidationError({"mikrotik": str(exc)})
 
-            session.save()
+            if service_type == "wifi" and not mikrotik_enabled:
+                code = session.voucher_code or f"WIFI-{session.id:06d}"
+                session.voucher_code = code
+                session.mikrotik_username = code
+                session.mikrotik_user_id = ""
+                session.save(update_fields=[
+                    "voucher_code",
+                    "mikrotik_username",
+                    "mikrotik_user_id",
+                    "updated_at",
+                ])
 
             station.status = Station.Status.OCCUPIED
             station.save(update_fields=["status"])
+
+            if service_type == "wifi" and mikrotik_enabled:
+                event_note = (
+                    "Voucher créé. Le chrono démarre quand le client utilise "
+                    "le code sur le portail Hotspot."
+                )
+            elif service_type == "wifi" and not mikrotik_enabled:
+                event_note = (
+                    "Mode test sans MikroTik. Session WiFi démarrée immédiatement."
+                )
+            else:
+                event_note = "Session console démarrée immédiatement."
 
             SessionEvent.objects.create(
                 session=session,
                 event_type=SessionEvent.EventType.START,
                 user=self.request.user,
-                note=(
-                    "Voucher créé. Le chrono démarre quand le client utilise le code sur le portail Hotspot."
-                    if service_type == "wifi"
-                    else "Session console démarrée immédiatement."
-                ),
+                note=event_note,
             )
 
             AuditLog.objects.create(
@@ -476,29 +504,39 @@ class SessionViewSet(viewsets.ModelViewSet):
                     "service_type": session.service_type,
                     "session_mode": session.session_mode,
                     "remaining_seconds": session.remaining_seconds,
+                    "mikrotik_enabled": mikrotik_enabled,
+                    "timer_starts_now": timer_starts_now,
                 },
             )
 
     @action(detail=False, methods=["get"], url_path="active")
     def active(self, request):
         queryset = self.get_queryset().filter(
-            status__in=[
+            Q(status__in=[
                 Session.Status.ACTIVE,
                 Session.Status.PAUSED,
-            ]
+            ])
+            |
+            Q(
+                status=Session.Status.COMPLETED,
+                payment_status=Session.PaymentStatus.PENDING,
+            )
         )
 
         self._sync_mikrotik_active_sessions(
             queryset.filter(status=Session.Status.ACTIVE)
         )
 
-        # Refetch après synchronisation: une session countdown peut être
-        # automatiquement terminée si le temps est écoulé.
         queryset = self.get_queryset().filter(
-            status__in=[
+            Q(status__in=[
                 Session.Status.ACTIVE,
                 Session.Status.PAUSED,
-            ]
+            ])
+            |
+            Q(
+                status=Session.Status.COMPLETED,
+                payment_status=Session.PaymentStatus.PENDING,
+            )
         )
 
         return Response(self.get_serializer(queryset, many=True).data)
@@ -506,10 +544,7 @@ class SessionViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="history")
     def history(self, request):
         queryset = self.get_queryset().filter(
-            status__in=[
-                Session.Status.COMPLETED,
-                Session.Status.ARCHIVED,
-            ]
+            status=Session.Status.ARCHIVED,
         )
 
         return Response(self.get_serializer(queryset, many=True).data)
@@ -526,7 +561,6 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "status": "Seule une session active peut être mise en pause"
             })
 
-        # Figer le temps consommé jusqu'au moment de la pause
         session.consume_running_time()
         session.status = Session.Status.PAUSED
 
@@ -665,7 +699,6 @@ class SessionViewSet(viewsets.ModelViewSet):
             session.consume_running_time()
             self._cap_countdown_after_timeup(session)
 
-        # Si on termine pendant une pause, calculer aussi cette pause
         if session.status == Session.Status.PAUSED:
             last_pause_event = (
                 session.events
@@ -689,8 +722,6 @@ class SessionViewSet(viewsets.ModelViewSet):
         try:
             self._sync_pause_or_finish_wifi(session)
         except Exception as exc:
-            # La session Django ne doit pas rester bloquée si MikroTik renvoie 500.
-            # Le routeur peut déjà avoir supprimé l'utilisateur actif ou refuser un remove.
             print(f"[MikroTik warning] finish session {session.id}: {exc}")
 
         session.ended_at = now
@@ -698,6 +729,9 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.status = Session.Status.COMPLETED
         session.closed_by = request.user
         session.final_price = session.compute_final_price()
+        session.payment_status = Session.PaymentStatus.PENDING
+        session.paid_at = None
+        session.paid_by = None
 
         session.save(
             update_fields=[
@@ -709,6 +743,9 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "status",
                 "closed_by",
                 "final_price",
+                "payment_status",
+                "paid_at",
+                "paid_by",
                 "updated_at",
             ]
         )
@@ -721,6 +758,7 @@ class SessionViewSet(viewsets.ModelViewSet):
             session=session,
             event_type=SessionEvent.EventType.FINISH,
             user=request.user,
+            note="Session terminée. Paiement en attente.",
         )
 
         AuditLog.objects.create(
@@ -733,10 +771,78 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "consumed_seconds": session.consumed_seconds,
                 "remaining_seconds": session.remaining_seconds,
                 "paused_duration_seconds": session.paused_duration_seconds,
+                "payment_status": session.payment_status,
             },
         )
 
         return Response(self.get_serializer(session).data)
+
+    @action(detail=True, methods=["post"], url_path="pay")
+    def pay(self, request, pk=None):
+        session = self.get_object()
+
+        if session.status in [
+            Session.Status.ACTIVE,
+            Session.Status.PAUSED,
+        ]:
+            return Response(
+                {
+                    "detail": "Impossible de payer une session encore active ou en pause. Terminez d'abord la session."
+                },
+                status=drf_status.HTTP_400_BAD_REQUEST,
+            )
+
+        if session.status == Session.Status.ARCHIVED:
+            return Response(
+                self.get_serializer(session).data,
+                status=drf_status.HTTP_200_OK,
+            )
+
+        if session.status != Session.Status.COMPLETED:
+            return Response(
+                {
+                    "detail": "Seule une session terminée peut être payée."
+                },
+                status=drf_status.HTTP_400_BAD_REQUEST,
+            )
+
+        session.payment_status = Session.PaymentStatus.PAID
+        session.paid_at = timezone.now()
+        session.paid_by = request.user
+        session.status = Session.Status.ARCHIVED
+
+        session.save(update_fields=[
+            "payment_status",
+            "paid_at",
+            "paid_by",
+            "status",
+            "updated_at",
+        ])
+
+        SessionEvent.objects.create(
+            session=session,
+            event_type=SessionEvent.EventType.ARCHIVE,
+            user=request.user,
+            note="Paiement confirmé. Session archivée.",
+        )
+
+        AuditLog.objects.create(
+            user=request.user,
+            action="session_paid",
+            entity_type="Session",
+            entity_id=str(session.id),
+            payload={
+                "session_id": session.id,
+                "service_type": session.service_type,
+                "final_price": str(session.final_price),
+                "paid_at": session.paid_at.isoformat() if session.paid_at else None,
+            },
+        )
+
+        return Response(
+            self.get_serializer(session).data,
+            status=drf_status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="archive")
     def archive(self, request, pk=None):
@@ -750,6 +856,11 @@ class SessionViewSet(viewsets.ModelViewSet):
                 "status": "Termine d'abord la session avant archivage"
             })
 
+        if session.payment_status != Session.PaymentStatus.PAID:
+            raise serializers.ValidationError({
+                "payment": "Confirme d'abord le paiement avant archivage"
+            })
+
         session.status = Session.Status.ARCHIVED
         session.save(update_fields=["status", "updated_at"])
 
@@ -757,6 +868,7 @@ class SessionViewSet(viewsets.ModelViewSet):
             session=session,
             event_type=SessionEvent.EventType.ARCHIVE,
             user=request.user,
+            note="Session archivée.",
         )
 
         AuditLog.objects.create(

@@ -11,6 +11,10 @@ class Session(models.Model):
         COMPLETED = "completed", "Completed"
         ARCHIVED = "archived", "Archived"
 
+    class PaymentStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PAID = "paid", "Paid"
+
     client_name = models.CharField(max_length=255, blank=True)
 
     voucher_code = models.CharField(max_length=30, unique=True, null=True, blank=True)
@@ -35,6 +39,9 @@ class Session(models.Model):
     hourly_rate_snapshot = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     minimum_price_snapshot = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     final_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    payment_status = models.CharField(max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.PAID)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="paid_sessions")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="created_sessions")
     closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="closed_sessions")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -113,6 +120,7 @@ class SessionEvent(models.Model):
         RESUME = "resume", "Resume"
         FINISH = "finish", "Finish"
         ARCHIVE = "archive", "Archive"
+        PAY = "pay", "Pay"
 
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="events")
     event_type = models.CharField(max_length=20, choices=EventType.choices)
