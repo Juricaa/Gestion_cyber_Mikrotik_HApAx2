@@ -544,7 +544,10 @@ class SessionViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="history")
     def history(self, request):
         queryset = self.get_queryset().filter(
-            status=Session.Status.ARCHIVED,
+            status__in=[
+                Session.Status.COMPLETED,
+                Session.Status.ARCHIVED,
+            ]
         )
 
         return Response(self.get_serializer(queryset, many=True).data)
@@ -792,7 +795,7 @@ class SessionViewSet(viewsets.ModelViewSet):
                 status=drf_status.HTTP_400_BAD_REQUEST,
             )
 
-        if session.status == Session.Status.ARCHIVED:
+        if session.status == Session.Status.COMPLETED:
             return Response(
                 self.get_serializer(session).data,
                 status=drf_status.HTTP_200_OK,
@@ -809,7 +812,7 @@ class SessionViewSet(viewsets.ModelViewSet):
         session.payment_status = Session.PaymentStatus.PAID
         session.paid_at = timezone.now()
         session.paid_by = request.user
-        session.status = Session.Status.ARCHIVED
+        session.status = Session.Status.COMPLETED
 
         session.save(update_fields=[
             "payment_status",
@@ -821,9 +824,9 @@ class SessionViewSet(viewsets.ModelViewSet):
 
         SessionEvent.objects.create(
             session=session,
-            event_type=SessionEvent.EventType.ARCHIVE,
+            event_type=SessionEvent.EventType.COMPLETED,
             user=request.user,
-            note="Paiement confirmé. Session archivée.",
+            note="Paiement confirmé. Session terminée.",
         )
 
         AuditLog.objects.create(

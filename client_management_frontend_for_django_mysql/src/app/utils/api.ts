@@ -1,4 +1,4 @@
-import { AppSettings, ServiceType, Session, Statistics, Product } from "../types";
+import { AppSettings, DailyCashReconciliation, DailyRevenueRow, Sale, ServiceType, Session, Statistics, Product } from "../types";
 
 declare global {
   interface ImportMetaEnv {
@@ -153,6 +153,15 @@ export interface BackendSale {
   sold_at: string;
 }
 
+export interface BackendCashReconciliation {
+  id: number;
+  date: string;
+  actual_amount: number | string;
+  note?: string;
+  updated_at?: string;
+  updated_by_username?: string;
+}
+
 interface PricingRow {
   id: number;
   service_type: string;
@@ -194,6 +203,36 @@ const AUTH_PATH_CANDIDATES = {
 function parseNumber(value: unknown, fallback = 0) {
   const num = typeof value === "number" ? value : Number(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function toMoney(value: unknown) {
+  return Math.round(parseNumber(value, 0) * 100) / 100;
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function dateKeyFromValue(value?: string | null) {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function labelFromDateKey(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+
+  if (!year || !month || !day) return dateKey;
+
+  return new Date(year, month - 1, day).toLocaleDateString("fr-FR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function readCookie(name: string) {
@@ -503,6 +542,29 @@ function mapSession(raw: any): Session {
     timerSnapshotAt: raw.timer_snapshot_at || undefined,
 
     timerSyncedAt,
+  };
+}
+
+function mapSale(raw: BackendSale): Sale {
+  return {
+    id: raw.id,
+    title: raw.title,
+    quantity: parseNumber(raw.quantity, 0),
+    unitPrice: toMoney(raw.unit_price),
+    totalPrice: toMoney(raw.total_price),
+    soldByUsername: raw.sold_by_username,
+    soldAt: raw.sold_at,
+  };
+}
+
+function mapCashReconciliation(raw: BackendCashReconciliation): DailyCashReconciliation {
+  return {
+    id: raw.id,
+    date: raw.date,
+    actualAmount: toMoney(raw.actual_amount),
+    note: raw.note || "",
+    updatedAt: raw.updated_at,
+    updatedByUsername: raw.updated_by_username,
   };
 }
 
@@ -964,6 +1026,80 @@ export async function fetchSalesSummaryApi(startDate?: string, endDate?: string)
   };
 }
 
+function buildDailyRevenueRows(sessions: Session[], sales: BackendSale[]): DailyRevenueRow[] {
+  const rows = new Map<string, DailyRevenueRow>();
+
+  const ensureRow = (date: string) => {
+    const existing = rows.get(date);
+    if (existing) return existing;
+
+    const row: DailyRevenueRow = {
+      date,
+      label: labelFromDateKey(date),
+      wifiRevenue: 0,
+      consoleRevenue: 0,
+      productRevenue: 0,
+      totalAppRevenue: 0,
+      actualAmount: null,
+      difference: null,
+      sessionCount: 0,
+      wifiSessionCount: 0,
+      consoleSessionCount: 0,
+      saleCount: 0,
+      productBreakdown: {},
+    };
+
+    rows.set(date, row);
+    return row;
+  };
+
+  sessions
+    .filter((session) => session.status === "terminated" || session.status === "archived")
+    .forEach((session) => {
+      const date = dateKeyFromValue(session.paidAt || session.endTime || session.startTime);
+      if (!date) return;
+
+      const row = ensureRow(date);
+      const amount = toMoney(session.totalCost || 0);
+
+      row.sessionCount += 1;
+      row.totalAppRevenue += amount;
+
+      if (session.serviceType === "wifi") {
+        row.wifiRevenue += amount;
+        row.wifiSessionCount += 1;
+      }
+
+      if (session.serviceType === "console") {
+        row.consoleRevenue += amount;
+        row.consoleSessionCount += 1;
+      }
+    });
+
+  sales.forEach((sale) => {
+    const date = dateKeyFromValue(sale.sold_at);
+    if (!date) return;
+
+    const row = ensureRow(date);
+    const amount = toMoney(sale.total_price);
+
+    row.productRevenue += amount;
+    row.totalAppRevenue += amount;
+    row.saleCount += 1;
+    row.productBreakdown[sale.title] = (row.productBreakdown[sale.title] || 0) + amount;
+  });
+
+  return Array.from(rows.values())
+    .map((row) => ({
+      ...row,
+      wifiRevenue: toMoney(row.wifiRevenue),
+      consoleRevenue: toMoney(row.consoleRevenue),
+      productRevenue: toMoney(row.productRevenue),
+      totalAppRevenue: toMoney(row.totalAppRevenue),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 export async function fetchStatisticsApi(
   startDate?: string,
   endDate?: string
@@ -974,7 +1110,7 @@ export async function fetchStatisticsApi(
   ]);
 
   const filteredSessions = sessions.filter((session) =>
-    isWithinRange(session.startTime, startDate, endDate)
+    isWithinRange(session.paidAt || session.endTime || session.startTime, startDate, endDate)
   );
 
   const filteredSales = sales.filter((sale) =>
@@ -1011,7 +1147,51 @@ export async function fetchStatisticsApi(
     revenueByService,
     revenueByDesignation,
     sessions: filteredSessions,
+    sales: filteredSales.map(mapSale),
+    dailyRevenue: buildDailyRevenueRows(filteredSessions, filteredSales),
   };
+}
+
+export async function fetchCashReconciliationsApi(
+  startDate?: string,
+  endDate?: string
+): Promise<DailyCashReconciliation[]> {
+  const params = new URLSearchParams();
+
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+
+  const query = params.toString();
+  const data = await apiRequest<BackendCashReconciliation[]>(
+    `/reports/cash-reconciliations/${query ? `?${query}` : ""}`
+  );
+
+  return data.map(mapCashReconciliation);
+}
+
+export async function saveCashReconciliationApi(payload: {
+  id?: number;
+  date: string;
+  actualAmount: number;
+  note?: string;
+}): Promise<DailyCashReconciliation> {
+  const body = JSON.stringify({
+    date: payload.date,
+    actual_amount: payload.actualAmount,
+    note: payload.note || "",
+  });
+
+  const data = await apiRequest<BackendCashReconciliation>(
+    payload.id
+      ? `/reports/cash-reconciliations/${payload.id}/`
+      : "/reports/cash-reconciliations/",
+    {
+      method: payload.id ? "PATCH" : "POST",
+      body,
+    }
+  );
+
+  return mapCashReconciliation(data);
 }
 
 export async function fetchDashboardSummaryApi() {

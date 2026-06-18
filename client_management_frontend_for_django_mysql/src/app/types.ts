@@ -74,6 +74,41 @@ export interface AppSettings {
   products: Product[];
 }
 
+export interface Sale {
+  id: number;
+  title: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  soldByUsername?: string;
+  soldAt: string;
+}
+
+export interface DailyCashReconciliation {
+  id?: number;
+  date: string;
+  actualAmount: number;
+  note?: string;
+  updatedAt?: string;
+  updatedByUsername?: string;
+}
+
+export interface DailyRevenueRow {
+  date: string;
+  label: string;
+  wifiRevenue: number;
+  consoleRevenue: number;
+  productRevenue: number;
+  totalAppRevenue: number;
+  actualAmount?: number | null;
+  difference?: number | null;
+  sessionCount: number;
+  wifiSessionCount: number;
+  consoleSessionCount: number;
+  saleCount: number;
+  productBreakdown: Record<string, number>;
+}
+
 export interface Statistics {
   totalSessions: number;
   activeSessions: number;
@@ -82,4 +117,6 @@ export interface Statistics {
   revenueByService: Record<string, number>;
   revenueByDesignation: Record<string, number>;
   sessions: Session[];
+  sales: Sale[];
+  dailyRevenue: DailyRevenueRow[];
 }
