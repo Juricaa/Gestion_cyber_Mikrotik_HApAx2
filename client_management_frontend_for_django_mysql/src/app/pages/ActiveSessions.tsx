@@ -70,10 +70,40 @@ function isVisibleActiveSession(session: Session) {
 }
 
 function isWaitingForHotspotSession(session: Session) {
-  // Source de vérité: backend/api.ts.
-  // Ne pas recalculer ici avec lastResumedAt, sinon le mode simulation
-  // peut ré-afficher "En attente client" par erreur.
-  return session.waitingForHotspot === true;
+  const status = String((session as any).status || "").toLowerCase();
+
+  // Nouveau comportement : si api.ts/backend a déjà déterminé l'état,
+  // on ne le recalcule pas ici. Cela évite le bug où, après changement de page,
+  // un WiFi countdown revient à sa durée initiale parce que lastResumedAt est null.
+  if (typeof session.waitingForHotspot === "boolean") {
+    return session.waitingForHotspot;
+  }
+
+  const plannedSeconds = Math.max(0, Math.floor((session.plannedDuration || 0) * 60));
+  const remainingSeconds =
+    typeof session.remainingSeconds === "number"
+      ? Math.max(0, Math.floor(session.remainingSeconds))
+      : plannedSeconds;
+
+  const countdownAlreadyProgressed =
+    session.sessionType === "countdown" &&
+    plannedSeconds > 0 &&
+    remainingSeconds > 0 &&
+    remainingSeconds < plannedSeconds;
+
+  const elapsedAlreadyProgressed =
+    Math.max(0, Math.floor(session.elapsedSeconds || 0)) > 0;
+
+  if (countdownAlreadyProgressed || elapsedAlreadyProgressed || session.timerStarted) {
+    return false;
+  }
+
+  return Boolean(
+    session.serviceType === "wifi" &&
+      status === "active" &&
+      Boolean(session.voucherCode || session.mikrotikUsername) &&
+      !session.lastResumedAt
+  );
 }
 
 function formatDuration(totalSeconds: number) {
@@ -93,14 +123,12 @@ export function ActiveSessions() {
     terminateSession,
     pauseSession,
     resumeSession,
-    paySession,
     fetchSessions,
     addSession,
     getNextServiceName,
   } = useApp();
 
   const [terminating, setTerminating] = useState<string | null>(null);
-  const [paying, setPaying] = useState<string | null>(null);
   const [pausing, setPausing] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
@@ -181,91 +209,112 @@ export function ActiveSessions() {
       return 0;
     }
 
-    // Priorité au compteur précis renvoyé par Django.
-    // C'est indispensable pour une session WiFi dont le timer démarre seulement
-    // quand MikroTik voit le voucher dans /ip hotspot active.
-    if (typeof session.elapsedSeconds === "number") {
-      return Math.max(0, Math.floor(session.elapsedSeconds));
+    const status = String((session as any).status || "").toLowerCase();
+    const backendElapsedSeconds =
+      typeof session.elapsedSeconds === "number"
+        ? Math.max(0, Math.floor(session.elapsedSeconds))
+        : Math.max(0, Math.floor((session.elapsedTime || 0) * 60));
+
+    // Pause / terminé / archivé : afficher la valeur backend figée.
+    if (isBackendPausedSession(session) || status !== "active") {
+      if (
+        session.sessionType === "countdown" &&
+        session.plannedDuration &&
+        typeof session.remainingSeconds === "number"
+      ) {
+        const totalPlannedSeconds = session.plannedDuration * 60;
+        return Math.max(0, totalPlannedSeconds - session.remainingSeconds);
+      }
+
+      return backendElapsedSeconds;
     }
 
-    if (
-      session.sessionType === "countdown" &&
-      session.plannedDuration &&
-      typeof session.remainingSeconds === "number"
-    ) {
-      const totalPlannedSeconds = session.plannedDuration * 60;
+    // IMPORTANT : api.ts reçoit déjà consumed_seconds courant du backend.
+    // On avance seulement depuis le moment où cette valeur a été synchronisée
+    // côté frontend. Ne pas recalculer depuis lastResumedAt, sinon après pause/
+    // reprise ou changement de page le temps est compté deux fois.
+    if (typeof session.timerSyncedAt === "number") {
+      const deltaSinceSync = Math.max(
+        0,
+        Math.floor((Date.now() - session.timerSyncedAt) / 1000)
+      );
 
-      return Math.max(0, totalPlannedSeconds - session.remainingSeconds);
+      return backendElapsedSeconds + deltaSinceSync;
     }
 
+    // Fallback ancien format si timerSyncedAt n'existe pas.
     const startTime = new Date(session.startTime).getTime();
 
-    if (!Number.isNaN(startTime) && session.lastResumedAt) {
+    if (!Number.isNaN(startTime)) {
       const backendPausedSeconds = session.totalPausedSeconds || 0;
-
-      return Math.max(
+      const elapsedFromStart = Math.max(
         0,
         Math.floor((Date.now() - startTime) / 1000) - backendPausedSeconds
       );
+
+      return Math.max(backendElapsedSeconds, elapsedFromStart);
     }
 
-    return Math.max(0, Math.floor((session.elapsedTime || 0) * 60));
+    return backendElapsedSeconds;
   }, []);
 
-  useEffect(() => {
+  /**
+   * Correction bug secondes :
+   * Avant, le chrono faisait `currentSeconds + 1`. Quand la page était
+   * démontée/remontée ou quand `fetchSessions()` resynchronisait les sessions,
+   * le même tick pouvait être compté deux fois ou repartir avec une valeur
+   * décalée.
+   *
+   * Maintenant, à chaque seconde, on recalcule le temps depuis les timestamps
+   * backend (`started_at`, `last_resumed_at`, `consumed_seconds`) au lieu
+   * d'incrémenter un compteur local fragile.
+   */
+  const syncElapsedSeconds = useCallback(() => {
     setElapsedSecondsById((previous) => {
       const next: Record<string, number> = {};
 
       activeSessions.forEach((session) => {
         const sessionId = String(session.id);
-        const backendInitialSeconds = getInitialElapsedSeconds(session);
+        const backendSeconds = getInitialElapsedSeconds(session);
+        const backendPaused = isBackendPausedSession(session);
+        const localPaused = localPausedIds.has(sessionId);
 
         if (isWaitingForHotspotSession(session)) {
           next[sessionId] = 0;
-        } else if (isSessionPaused(session)) {
-          next[sessionId] = backendInitialSeconds;
-        } else {
-          // Si Django détecte le voucher après quelques secondes,
-          // on resynchronise immédiatement au compteur backend au lieu de repartir de 0.
-          next[sessionId] = Math.max(
-            previous[sessionId] ?? backendInitialSeconds,
-            backendInitialSeconds
-          );
+          return;
         }
+
+        // Pause locale immédiate : on fige la dernière valeur affichée
+        // pendant que le backend confirme status=paused.
+        if (localPaused && !backendPaused) {
+          next[sessionId] = previous[sessionId] ?? backendSeconds;
+          return;
+        }
+
+        // Si le backend confirme la pause, on affiche sa valeur figée.
+        // Sinon on recalcule depuis l'horloge réelle.
+        next[sessionId] = backendSeconds;
       });
 
       return next;
     });
-  }, [activeSessions, getInitialElapsedSeconds, isSessionPaused]);
+  }, [activeSessions, getInitialElapsedSeconds, localPausedIds]);
 
   useEffect(() => {
+    syncElapsedSeconds();
+
     const interval = setInterval(() => {
-      setElapsedSecondsById((previous) => {
-        const next = { ...previous };
-
-        activeSessions.forEach((session) => {
-          const sessionId = String(session.id);
-
-          const currentSeconds =
-            next[sessionId] ?? getInitialElapsedSeconds(session);
-
-          if (isWaitingForHotspotSession(session)) {
-            next[sessionId] = 0;
-          } else if (isSessionPaused(session)) {
-            next[sessionId] = currentSeconds;
-          } else {
-            next[sessionId] = currentSeconds + 1;
-          }
-        });
-
-        return next;
-      });
+      syncElapsedSeconds();
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [activeSessions, getInitialElapsedSeconds, isSessionPaused]);
+  }, [syncElapsedSeconds]);
 
   useEffect(() => {
+    // Quand on revient sur la page Active Sessions, on resynchronise tout de suite
+    // avec le backend au lieu d'attendre le prochain intervalle.
+    fetchSessions();
+
     const interval = setInterval(() => {
       fetchSessions();
     }, 10000);
@@ -280,6 +329,9 @@ export function ActiveSessions() {
   };
 
   const getTimeInfo = (session: Session) => {
+    const sessionId = String(session.id);
+    const backendPaused = isBackendPausedSession(session);
+    const localPaused = localPausedIds.has(sessionId);
     const paused = isSessionPaused(session);
     const waitingHotspot = isWaitingForHotspotSession(session);
 
@@ -295,17 +347,29 @@ export function ActiveSessions() {
             ? session.remainingSeconds
             : totalPlannedSeconds;
         elapsedSeconds = 0;
-      }
+      } else if (paused) {
+        // Pause confirmée backend : on affiche exactement remaining_seconds.
+        // Pause locale en attente de la réponse backend : on fige le snapshot
+        // pris au moment du clic Pause, sinon le compteur peut revenir en arrière.
+        if (backendPaused && typeof session.remainingSeconds === "number") {
+          remainingSeconds = Math.max(0, Math.floor(session.remainingSeconds));
+          elapsedSeconds = Math.max(0, totalPlannedSeconds - remainingSeconds);
+        } else if (localPaused) {
+          elapsedSeconds = getElapsedSeconds(session);
+          remainingSeconds = Math.max(0, totalPlannedSeconds - elapsedSeconds);
+        } else {
+          remainingSeconds = Math.max(0, totalPlannedSeconds - elapsedSeconds);
+        }
+      } else if (typeof session.remainingSeconds === "number") {
+        // Actif : remaining_seconds est un snapshot backend.
+        // On enlève seulement le delta depuis timerSyncedAt.
+        const deltaSinceSync =
+          typeof session.timerSyncedAt === "number"
+            ? Math.max(0, Math.floor((Date.now() - session.timerSyncedAt) / 1000))
+            : 0;
 
-      /**
-       * Correction importante :
-       * Si la session est en pause et que le backend donne remainingSeconds,
-       * on affiche exactement remainingSeconds du backend.
-       * Donc si DB = 34s et status=paused, le frontend reste à 34s.
-       */
-      if (!waitingHotspot && paused && typeof session.remainingSeconds === "number") {
-        remainingSeconds = Math.max(0, session.remainingSeconds);
-        elapsedSeconds = Math.max(0, totalPlannedSeconds - remainingSeconds);
+        remainingSeconds = Math.floor(session.remainingSeconds) - deltaSinceSync;
+        elapsedSeconds = totalPlannedSeconds - remainingSeconds;
       }
 
       const isExpired = !waitingHotspot && !paused && remainingSeconds <= 0;
@@ -320,8 +384,8 @@ export function ActiveSessions() {
         isWarning,
         isPaused: paused,
         isWaiting: waitingHotspot,
-        elapsedMinutes: Math.floor(elapsedSeconds / 60),
-        elapsedSeconds,
+        elapsedMinutes: Math.floor(Math.max(0, elapsedSeconds) / 60),
+        elapsedSeconds: Math.max(0, elapsedSeconds),
       };
     }
 
@@ -334,8 +398,8 @@ export function ActiveSessions() {
       isWarning: false,
       isPaused: paused,
       isWaiting: waitingHotspot,
-      elapsedMinutes: Math.floor(elapsedSeconds / 60),
-      elapsedSeconds,
+      elapsedMinutes: Math.floor(Math.max(0, elapsedSeconds) / 60),
+      elapsedSeconds: Math.max(0, elapsedSeconds),
     };
   };
 
@@ -486,6 +550,7 @@ export function ActiveSessions() {
 
       if (
         backendStatus !== "active" ||
+        session.serviceType !== "wifi" ||
         session.sessionType !== "countdown" ||
         isSessionPaused(session) ||
         isWaitingForHotspotSession(session) ||
