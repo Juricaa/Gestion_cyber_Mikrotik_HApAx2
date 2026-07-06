@@ -81,14 +81,14 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 DATABASES = {
-    "default": {
+ "default": {
         "ENGINE": "django.db.backends.mysql",
-        "NAME": os.getenv("MYSQL_DATABASE"),
-        "USER": os.getenv("MYSQL_USER"),
-        "PASSWORD": os.getenv("MYSQL_PASSWORD"),
-        "HOST": os.getenv("MYSQL_HOST"),
-        "PORT": os.getenv("MYSQL_PORT"),
-        "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "60")),
+        "NAME": "cyber_manager",
+        "USER": "root",        # On utilise root qui a tous les privilèges (ALL PRIVILEGES) sur votre capture
+        "PASSWORD": "",        # Strictement vide, pas de texte, pas de os.getenv
+        "HOST": "127.0.0.1",
+        "PORT": "3306",
+        "CONN_MAX_AGE": 60,
         "OPTIONS": {
             "charset": "utf8mb4",
             "init_command": "SET sql_mode='STRICT_TRANS_TABLES', default_storage_engine=InnoDB",
