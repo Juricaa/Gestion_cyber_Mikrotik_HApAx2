@@ -42,6 +42,7 @@ INSTALLED_APPS = [
 
     "apps.accounts.apps.AccountsConfig",
     "apps.stations.apps.StationsConfig",
+    "apps.backups.apps.BackupsConfig",
     "apps.pricing.apps.PricingConfig",
     "apps.sessions_app.apps.SessionsAppConfig",
     "apps.sales.apps.SalesConfig",
