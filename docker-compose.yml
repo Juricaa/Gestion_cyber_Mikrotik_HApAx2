@@ -12,6 +12,7 @@ services:
       - "${MYSQL_PUBLIC_PORT:-3307}:3306"
     volumes:
       - cyber_db_data:/var/lib/mysql
+      - ./backups:/backups
     healthcheck:
       test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u\"$${MARIADB_USER}\" -p\"$${MARIADB_PASSWORD}\" --silent"]
       interval: 10s
@@ -32,7 +33,7 @@ services:
       MYSQL_PORT: "3306"
     ports:
       - "${BACKEND_PORT:-8000}:8000"
-      
+
     volumes:
     - type: bind
       source: ./backups
