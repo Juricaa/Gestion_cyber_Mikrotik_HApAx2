@@ -1,4 +1,5 @@
 # Secrets / variables locales
+backups/
 .env
 **/.env
 .env.*
