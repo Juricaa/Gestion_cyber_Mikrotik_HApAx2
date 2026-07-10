@@ -1,4 +1,4 @@
-import { AppSettings, DailyCashReconciliation, DailyRevenueRow, Sale, ServiceType, Session, Statistics, Product } from "../types";
+import { AppSettings, BackupFile, BackupHistoryEntry, DailyCashReconciliation, DailyRevenueRow, Sale, ServiceType, Session, Statistics, Product } from "../types";
 
 declare global {
   interface ImportMetaEnv {
@@ -331,6 +331,35 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
   }
 
   return requestAbsolute<T>(`${API_ROOT}${path}`, options);
+}
+
+export interface BackupListResponse {
+  backup_dir_available: boolean;
+  backups: BackupFile[];
+  history: BackupHistoryEntry[];
+}
+
+export async function getBackups() {
+  return apiRequest<BackupListResponse>("/backup/");
+}
+
+export async function createBackup() {
+  return apiRequest<{ filename: string; size_bytes: number }>("/backup/", {
+    method: "POST",
+  });
+}
+
+export async function deleteBackup(filename: string) {
+  return apiRequest<void>(`/backup/${encodeURIComponent(filename)}/`, {
+    method: "DELETE",
+  });
+}
+
+export async function restoreBackup(filename: string, mode: "replace" | "backup_before_restore") {
+  return apiRequest<{ restored: string }>("/backup/restore/", {
+    method: "POST",
+    body: JSON.stringify({ filename, mode }),
+  });
 }
 
 function computeElapsedSeconds(raw: BackendSession) {

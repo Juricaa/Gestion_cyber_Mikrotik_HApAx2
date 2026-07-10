@@ -27,6 +27,7 @@ Backend  : http://localhost:8000
 Swagger  : http://localhost:8000/api/docs/
 Admin    : http://localhost:8000/admin/
 MariaDB  : localhost:3307 depuis Windows, db:3306 depuis Docker
+Backups  : dossier partagé ./backups (monté dans Docker vers /app/backups)
 ```
 
 ## 3. Créer un superuser Django

@@ -120,3 +120,21 @@ export interface Statistics {
   sales: Sale[];
   dailyRevenue: DailyRevenueRow[];
 }
+
+export interface BackupFile {
+  filename: string;
+  size_bytes: number;
+  created_at: string;
+  modified_at: string;
+  type: string;
+}
+
+export interface BackupHistoryEntry {
+  id: number;
+  user: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}

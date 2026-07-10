@@ -10,6 +10,7 @@ import { NotificationSettings } from "./pages/NotificationSettings";
 import { FilmSales } from "./pages/FilmSales";
 import { FilmSalesHistory } from "./pages/FilmSalesHistory";
 import { UserManagement } from "./pages/UserManagement";
+import { BackupPage } from "./pages/BackupPage";
 import { Layout } from "./components/Layout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AppProvider } from "./context/AppContext";
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="sales" element={<FilmSales />} />
               <Route path="sales-history" element={<FilmSalesHistory />} />
               <Route path="history" element={<History />} />
+              <Route path="backups" element={<ProtectedRoute adminOnly><BackupPage /></ProtectedRoute>} />
               <Route path="archives" element={<ProtectedRoute adminOnly><Archives /></ProtectedRoute>} />
               <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
               <Route path="users" element={<ProtectedRoute adminOnly><UserManagement /></ProtectedRoute>} />
