@@ -1,4 +1,4 @@
-import { AppSettings, BackupFile, BackupHistoryEntry, DailyCashReconciliation, DailyRevenueRow, Sale, ServiceType, Session, Statistics, Product } from "../types";
+import { AppSettings, BackupFile, BackupHistoryEntry, DailyCashReconciliation, DailyRevenueRow, MikroTikConfiguration, MikroTikConfigurationInput, MikroTikRouterInfo, Sale, ServiceType, Session, Statistics, Product } from "../types";
 
 declare global {
   interface ImportMetaEnv {
@@ -331,6 +331,89 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
   }
 
   return requestAbsolute<T>(`${API_ROOT}${path}`, options);
+}
+
+interface BackendMikroTikConfiguration {
+  base_url: string;
+  username: string;
+  enabled: boolean;
+  verify_ssl: boolean;
+  hotspot_profile: string;
+  source: "database" | "environment";
+  password_configured: boolean;
+  updated_at?: string | null;
+  updated_by_username?: string | null;
+}
+
+function mapMikroTikConfiguration(raw: BackendMikroTikConfiguration): MikroTikConfiguration {
+  return {
+    baseUrl: raw.base_url || "",
+    username: raw.username || "",
+    enabled: Boolean(raw.enabled),
+    verifySsl: Boolean(raw.verify_ssl),
+    hotspotProfile: raw.hotspot_profile || "paid_wifi",
+    source: raw.source || "environment",
+    passwordConfigured: Boolean(raw.password_configured),
+    updatedAt: raw.updated_at || null,
+    updatedByUsername: raw.updated_by_username || null,
+  };
+}
+
+function mikroTikPayload(input: MikroTikConfigurationInput) {
+  return {
+    ...(input.baseUrl !== undefined ? { base_url: input.baseUrl } : {}),
+    ...(input.username !== undefined ? { username: input.username } : {}),
+    ...(input.password !== undefined ? { password: input.password } : {}),
+    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+    ...(input.verifySsl !== undefined ? { verify_ssl: input.verifySsl } : {}),
+    ...(input.hotspotProfile !== undefined ? { hotspot_profile: input.hotspotProfile } : {}),
+  };
+}
+
+export async function getMikroTikConfiguration(): Promise<MikroTikConfiguration> {
+  const raw = await apiRequest<BackendMikroTikConfiguration>("/sessions/mikrotik-config/");
+  return mapMikroTikConfiguration(raw);
+}
+
+export async function saveMikroTikConfiguration(
+  input: MikroTikConfigurationInput,
+): Promise<MikroTikConfiguration> {
+  const raw = await apiRequest<BackendMikroTikConfiguration>("/sessions/mikrotik-config/", {
+    method: "PATCH",
+    body: JSON.stringify(mikroTikPayload(input)),
+  });
+  return mapMikroTikConfiguration(raw);
+}
+
+export async function resetMikroTikConfiguration(): Promise<MikroTikConfiguration> {
+  const raw = await apiRequest<BackendMikroTikConfiguration>("/sessions/mikrotik-config/", {
+    method: "DELETE",
+  });
+  return mapMikroTikConfiguration(raw);
+}
+
+export async function testMikroTikConnection(
+  input: MikroTikConfigurationInput,
+): Promise<MikroTikRouterInfo> {
+  const response = await apiRequest<{
+    success: boolean;
+    router: {
+      identity: string;
+      version?: string | null;
+      board_name?: string | null;
+      architecture?: string | null;
+    };
+  }>("/sessions/mikrotik-config/test/", {
+    method: "POST",
+    body: JSON.stringify(mikroTikPayload(input)),
+  });
+
+  return {
+    identity: response.router.identity,
+    version: response.router.version || null,
+    boardName: response.router.board_name || null,
+    architecture: response.router.architecture || null,
+  };
 }
 
 export interface BackupListResponse {

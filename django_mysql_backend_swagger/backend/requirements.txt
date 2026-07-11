@@ -8,3 +8,4 @@ python-dotenv
 requests
 routeros-api
 gunicorn
+cryptography>=42,<47

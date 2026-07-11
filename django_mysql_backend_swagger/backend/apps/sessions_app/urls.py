@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .mikrotik_views import MikroTikConfigurationView, MikroTikConnectionTestView
 from .views import SessionViewSet
 
 
@@ -45,6 +46,8 @@ session_archive = SessionViewSet.as_view({
 
 
 urlpatterns = [
+    path("mikrotik-config/", MikroTikConfigurationView.as_view(), name="mikrotik-config"),
+    path("mikrotik-config/test/", MikroTikConnectionTestView.as_view(), name="mikrotik-config-test"),
     path("", session_list, name="sessions-list"),
     path("active/", session_active, name="sessions-active"),
     path("history/", session_history, name="sessions-history"),

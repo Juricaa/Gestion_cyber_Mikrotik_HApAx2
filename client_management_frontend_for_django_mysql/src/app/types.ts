@@ -139,3 +139,31 @@ export interface BackupHistoryEntry {
   payload: Record<string, unknown>;
   created_at: string;
 }
+
+export interface MikroTikConfiguration {
+  baseUrl: string;
+  username: string;
+  enabled: boolean;
+  verifySsl: boolean;
+  hotspotProfile: string;
+  source: "database" | "environment";
+  passwordConfigured: boolean;
+  updatedAt?: string | null;
+  updatedByUsername?: string | null;
+}
+
+export interface MikroTikConfigurationInput {
+  baseUrl?: string;
+  username?: string;
+  password?: string;
+  enabled?: boolean;
+  verifySsl?: boolean;
+  hotspotProfile?: string;
+}
+
+export interface MikroTikRouterInfo {
+  identity: string;
+  version?: string | null;
+  boardName?: string | null;
+  architecture?: string | null;
+}

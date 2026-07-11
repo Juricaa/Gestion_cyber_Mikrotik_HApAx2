@@ -1,11 +1,113 @@
 import os
 import re
 import secrets
+from dataclasses import asdict, dataclass
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 import requests
+from django.conf import settings
+from django.db import OperationalError, ProgrammingError
 from requests.auth import HTTPBasicAuth
+
+
+def _as_bool(value, default=False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def normalize_mikrotik_base_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    if "://" not in raw:
+        raw = f"http://{raw}"
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Adresse MikroTik invalide. Utilisez une IP ou une URL HTTP/HTTPS.")
+    if parsed.username or parsed.password:
+        raise ValueError("Ne placez pas les identifiants dans l'URL MikroTik.")
+
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        path = "/rest"
+    elif not path.endswith("/rest"):
+        path = f"{path}/rest"
+
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
+
+
+@dataclass
+class EffectiveMikroTikConfiguration:
+    base_url: str
+    username: str
+    password: str
+    verify_ssl: bool
+    hotspot_profile: str
+    enabled: bool
+    source: str = "environment"
+    updated_at: Optional[str] = None
+    updated_by_username: Optional[str] = None
+
+    def public_dict(self) -> dict:
+        data = asdict(self)
+        data.pop("password", None)
+        data["password_configured"] = bool(self.password)
+        return data
+
+
+def environment_mikrotik_configuration() -> EffectiveMikroTikConfiguration:
+    configured_url = os.getenv("MIKROTIK_BASE_URL", "http://192.168.88.1/rest")
+    try:
+        base_url = normalize_mikrotik_base_url(configured_url)
+    except ValueError:
+        base_url = ""
+
+    enabled_default = _as_bool(os.getenv("MIKROTIK_ENABLE_HOTSPOT_SYNC"), False)
+    enabled = _as_bool(
+        getattr(settings, "MIKROTIK_ENABLE_HOTSPOT_SYNC", enabled_default),
+        enabled_default,
+    )
+
+    return EffectiveMikroTikConfiguration(
+        base_url=base_url,
+        username=os.getenv("MIKROTIK_USERNAME", "admin").strip(),
+        password=os.getenv("MIKROTIK_PASSWORD", ""),
+        verify_ssl=_as_bool(os.getenv("MIKROTIK_VERIFY_SSL"), False),
+        hotspot_profile=os.getenv("MIKROTIK_HOTSPOT_PROFILE", "paid_wifi").strip() or "paid_wifi",
+        enabled=enabled,
+        source="environment",
+    )
+
+
+def get_effective_mikrotik_configuration() -> EffectiveMikroTikConfiguration:
+    fallback = environment_mikrotik_configuration()
+
+    try:
+        from .models import MikroTikConfiguration
+
+        stored = MikroTikConfiguration.objects.select_related("updated_by").first()
+    except (OperationalError, ProgrammingError):
+        return fallback
+
+    if not stored:
+        return fallback
+
+    stored_password = stored.get_password()
+    return EffectiveMikroTikConfiguration(
+        base_url=stored.base_url or fallback.base_url,
+        username=stored.username or fallback.username,
+        password=stored_password or fallback.password,
+        verify_ssl=bool(stored.verify_ssl),
+        hotspot_profile=stored.hotspot_profile or fallback.hotspot_profile,
+        enabled=bool(stored.enabled),
+        source="database",
+        updated_at=stored.updated_at.isoformat() if stored.updated_at else None,
+        updated_by_username=(stored.updated_by.username if stored.updated_by else None),
+    )
 
 
 class MikroTikError(Exception):
@@ -13,17 +115,15 @@ class MikroTikError(Exception):
 
 
 class MikroTikClient:
-    def __init__(self):
-        base_url = os.getenv("MIKROTIK_BASE_URL", "http://192.168.88.1/rest").rstrip("/")
-        if not base_url.endswith("/rest"):
-            base_url = f"{base_url}/rest"
-
-        self.base_url = base_url
-        self.username = os.getenv("MIKROTIK_USERNAME", "admin")
-        self.password = os.getenv("MIKROTIK_PASSWORD", "Informaticien2025#")
-        self.verify_ssl = os.getenv("MIKROTIK_VERIFY_SSL", "false").lower() == "true"
-        self.hotspot_profile = os.getenv("MIKROTIK_HOTSPOT_PROFILE", "paid_wifi")
-        self.enabled = os.getenv("MIKROTIK_ENABLE_HOTSPOT_SYNC", "false").lower() == "true"
+    def __init__(self, configuration: Optional[EffectiveMikroTikConfiguration] = None):
+        config = configuration or get_effective_mikrotik_configuration()
+        self.base_url = config.base_url.rstrip("/")
+        self.username = config.username
+        self.password = config.password
+        self.verify_ssl = bool(config.verify_ssl)
+        self.hotspot_profile = config.hotspot_profile
+        self.enabled = bool(config.enabled)
+        self.source = config.source
 
     def _auth(self):
         return HTTPBasicAuth(self.username, self.password)
@@ -77,6 +177,25 @@ class MikroTikClient:
         except Exception as exc:
             print(f"[MikroTik warning] {exc}")
             return None
+
+    def test_connection(self) -> dict:
+        self._ensure_configured()
+        was_enabled = self.enabled
+        self.enabled = True
+        try:
+            identity = self._request("GET", "/system/identity")
+            resource = self._request("GET", "/system/resource")
+        finally:
+            self.enabled = was_enabled
+
+        identity_row = identity[0] if isinstance(identity, list) and identity else identity or {}
+        resource_row = resource[0] if isinstance(resource, list) and resource else resource or {}
+        return {
+            "identity": identity_row.get("name") or "MikroTik",
+            "version": resource_row.get("version"),
+            "board_name": resource_row.get("board-name"),
+            "architecture": resource_row.get("architecture-name"),
+        }
 
     @staticmethod
     def seconds_to_routeros_time(seconds: int) -> str:

@@ -12,6 +12,10 @@ from rest_framework.response import Response
 
 from apps.auditlog.models import AuditLog
 from apps.pricing.models import Tariff
+from apps.reports.services import (
+    delete_orphan_cash_reconciliation,
+    session_revenue_date,
+)
 from apps.stations.models import Station
 
 from .mikrotik import MikroTikError, get_mikrotik_client
@@ -49,10 +53,39 @@ class SessionViewSet(viewsets.ModelViewSet):
         )
         return super().retrieve(request, *args, **kwargs)
 
+    def perform_destroy(self, instance):
+        revenue_date = session_revenue_date(instance)
+        session_id = instance.id
+        session_payload = {
+            "service_type": instance.service_type,
+            "status": instance.status,
+            "final_price": str(instance.final_price or 0),
+            "revenue_date": str(revenue_date) if revenue_date else None,
+        }
+
+        with transaction.atomic():
+            instance.delete()
+
+            reconciliation_deleted = delete_orphan_cash_reconciliation(
+                revenue_date,
+                user=self.request.user,
+                source_type="Session",
+                source_id=session_id,
+            )
+
+            AuditLog.objects.create(
+                user=self.request.user,
+                action="session_deleted",
+                entity_type="Session",
+                entity_id=str(session_id),
+                payload={
+                    **session_payload,
+                    "cash_reconciliation_deleted": reconciliation_deleted,
+                },
+            )
+
     def _mikrotik_enabled(self):
-        return str(
-            getattr(settings, "MIKROTIK_ENABLE_HOTSPOT_SYNC", True)
-        ).strip().lower() in ("1", "true", "yes", "on")
+        return bool(get_mikrotik_client().enabled)
 
     def _voucher_limit_seconds(self, session: Session):
         if (

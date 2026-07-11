@@ -127,3 +127,44 @@ class SessionEvent(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     note = models.TextField(blank=True)
+
+
+class MikroTikConfiguration(models.Model):
+    """Configuration singleton du routeur, modifiable depuis l'application web."""
+
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    base_url = models.URLField(max_length=255, blank=True)
+    username = models.CharField(max_length=128, blank=True)
+    password_encrypted = models.TextField(blank=True)
+    enabled = models.BooleanField(default=False)
+    verify_ssl = models.BooleanField(default=False)
+    hotspot_profile = models.CharField(max_length=128, default="paid_wifi", blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_mikrotik_configurations",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Configuration MikroTik"
+        verbose_name_plural = "Configuration MikroTik"
+
+    def save(self, *args, **kwargs):
+        self.singleton_key = 1
+        super().save(*args, **kwargs)
+
+    def set_password(self, raw_password: str):
+        from .crypto import encrypt_secret
+
+        self.password_encrypted = encrypt_secret(raw_password)
+
+    def get_password(self) -> str:
+        from .crypto import decrypt_secret
+
+        return decrypt_secret(self.password_encrypted)
+
+    def __str__(self):
+        return self.base_url or "Configuration MikroTik"

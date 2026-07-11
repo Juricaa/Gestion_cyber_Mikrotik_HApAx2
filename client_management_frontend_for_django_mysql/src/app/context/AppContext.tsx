@@ -321,7 +321,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deleteSessions = async (ids: string[]) => {
-    await Promise.all(ids.map((id) => deleteSessionApi(id)));
+    // Suppression séquentielle : la dernière opération supprimée d'une journée
+    // déclenche de façon fiable le nettoyage du versement réel associé.
+    for (const id of ids) {
+      await deleteSessionApi(id);
+    }
     await refreshData();
   };
 

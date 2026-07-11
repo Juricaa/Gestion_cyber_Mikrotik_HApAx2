@@ -154,7 +154,11 @@ export function FilmSalesHistory() {
 
     setProcessing(true);
     try {
-      await Promise.all(selectedIds.map((id) => deleteSaleApi(id)));
+      // Suppression séquentielle pour garantir le nettoyage du versement réel
+      // lorsque la dernière vente de la journée disparaît.
+      for (const id of selectedIds) {
+        await deleteSaleApi(id);
+      }
       toast.success(`${selectedIds.length} achat(s) supprimé(s)`);
       setSelectedIds([]);
       await fetchFilmSales();
