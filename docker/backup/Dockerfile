@@ -1,6 +1,6 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache mariadb-client gzip tzdata bash dos2unix
+RUN apk add --no-cache mariadb-client zip gzip tzdata bash dos2unix
 
 WORKDIR /backup
 

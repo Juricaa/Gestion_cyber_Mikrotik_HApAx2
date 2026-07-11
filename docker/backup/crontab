@@ -1,1 +1,1 @@
-RUN echo "*/2 * * * * /bin/bash /usr/local/bin/backup.sh >> /backup/backup.log 2>&1" > /etc/crontabs/root
+0 23 * * * /bin/bash /usr/local/bin/backup.sh >> /backup/backup.log 2>&1

@@ -37,12 +37,13 @@ export function BackupPage() {
   const [backupDirAvailable, setBackupDirAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
+  const [operationLabel, setOperationLabel] = useState("Sauvegarde en cours");
   const [progress, setProgress] = useState(0);
   const [pendingAction, setPendingAction] = useState<{
     type: "restore" | "delete";
     filename: string;
   } | null>(null);
-  const [restoreMode, setRestoreMode] = useState("replace");
+  const [restoreMode, setRestoreMode] = useState("backup_before_restore");
 
   const loadBackups = async () => {
     setLoading(true);
@@ -85,6 +86,7 @@ export function BackupPage() {
   };
 
   const handleCreate = async () => {
+    setOperationLabel("Création de la sauvegarde");
     setProcessing(true);
     try {
       const result = await createBackup();
@@ -92,13 +94,14 @@ export function BackupPage() {
       await loadBackups();
     } catch (error: unknown) {
       console.error("Error creating backup:", error);
-      toast.error("Erreur lors de la création de la sauvegarde");
+      toast.error(error instanceof Error ? error.message : "Erreur lors de la création de la sauvegarde");
     } finally {
       finishOperation();
     }
   };
 
   const handleDelete = async (filename: string) => {
+    setOperationLabel("Suppression de la sauvegarde");
     setProcessing(true);
     setPendingAction(null);
     try {
@@ -107,22 +110,29 @@ export function BackupPage() {
       await loadBackups();
     } catch (error: unknown) {
       console.error("Error deleting backup:", error);
-      toast.error("Erreur lors de la suppression de la sauvegarde");
+      toast.error(error instanceof Error ? error.message : "Erreur lors de la suppression de la sauvegarde");
     } finally {
       finishOperation();
     }
   };
 
   const handleRestore = async (filename: string) => {
+    setOperationLabel("Restauration et synchronisation des données");
     setProcessing(true);
     setPendingAction(null);
     try {
-      await restoreBackup(filename, restoreMode as "replace" | "backup_before_restore");
+      const result = await restoreBackup(filename, restoreMode as "replace" | "backup_before_restore");
       toast.success(`Restauration terminée : ${filename}`);
       await loadBackups();
+
+      // Recharge toute l’application pour synchroniser les contextes React,
+      // les sessions, les tarifs, les postes et les rapports restaurés.
+      if (result.reload_required !== false) {
+        window.setTimeout(() => window.location.reload(), 700);
+      }
     } catch (error: unknown) {
       console.error("Error restoring backup:", error);
-      toast.error("Erreur lors de la restauration de la sauvegarde");
+      toast.error(error instanceof Error ? error.message : "Erreur lors de la restauration de la sauvegarde");
     } finally {
       finishOperation();
     }
@@ -159,8 +169,8 @@ export function BackupPage() {
           <CardContent>
             <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-medium text-blue-900">Opération en cours</p>
-                <p className="text-sm text-blue-700">Veuillez patienter pendant que la sauvegarde est traitée.</p>
+                <p className="text-sm font-medium text-blue-900">{operationLabel}</p>
+                <p className="text-sm text-blue-700">Ne fermez pas cette page avant la fin de l’opération.</p>
               </div>
               <span className="text-sm text-blue-800">{progress}%</span>
             </div>
@@ -211,6 +221,9 @@ export function BackupPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="text-base font-semibold text-gray-900 truncate">{backup.filename}</p>
                           <Badge variant="outline">{backup.type}</Badge>
+                          {backup.format_version === "cyber-manager-v1" && (
+                            <Badge variant="secondary">Format unifié</Badge>
+                          )}
                         </div>
                         <p className="text-sm text-gray-500">
                           {humanFileSize(backup.size_bytes)} • Modifié le {new Date(backup.modified_at).toLocaleString("fr-FR")}

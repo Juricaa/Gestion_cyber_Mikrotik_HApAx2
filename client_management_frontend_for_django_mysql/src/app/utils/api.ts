@@ -356,7 +356,7 @@ export async function deleteBackup(filename: string) {
 }
 
 export async function restoreBackup(filename: string, mode: "replace" | "backup_before_restore") {
-  return apiRequest<{ restored: string }>("/backup/restore/", {
+  return apiRequest<{ restored: string; reload_required?: boolean }>("/backup/restore/", {
     method: "POST",
     body: JSON.stringify({ filename, mode }),
   });
