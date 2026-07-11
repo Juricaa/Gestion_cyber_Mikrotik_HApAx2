@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "apps.sessions_app.apps.SessionsAppConfig",
     "apps.sales.apps.SalesConfig",
     "apps.reports.apps.ReportsConfig",
+    "apps.backup.apps.BackupConfig",
     "apps.auditlog.apps.AuditlogConfig",
 ]
 
