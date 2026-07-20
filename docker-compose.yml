@@ -60,6 +60,7 @@ services:
     build:
       context: ./docker/backup
       dockerfile: Dockerfile
+      network: host
     container_name: cyber_backup
     restart: unless-stopped
     stop_grace_period: 5m

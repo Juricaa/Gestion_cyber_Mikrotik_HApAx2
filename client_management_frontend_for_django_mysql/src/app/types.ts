@@ -127,7 +127,8 @@ export interface BackupFile {
   created_at: string;
   modified_at: string;
   type: string;
-  format_version?: "cyber-manager-v1" | "legacy";
+  scope?: "full" | "business";
+  format_version?: "cyber-manager-v1" | "cyber-manager-business-v1" | "legacy";
 }
 
 export interface BackupHistoryEntry {

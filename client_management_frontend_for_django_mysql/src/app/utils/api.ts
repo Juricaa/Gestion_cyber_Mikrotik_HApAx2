@@ -432,6 +432,14 @@ export async function createBackup() {
   });
 }
 
+export async function createBusinessBackup() {
+  // Route authentifiée sans exigence de jeton CSRF manuel.
+  return requestAbsolute<{ filename: string; size_bytes: number; scope: "business" }>(
+    `${API_ROOT}/backup/business/`,
+    { method: "POST" },
+  );
+}
+
 export async function deleteBackup(filename: string) {
   return apiRequest<void>(`/backup/${encodeURIComponent(filename)}/`, {
     method: "DELETE",
@@ -442,6 +450,37 @@ export async function restoreBackup(filename: string, mode: "replace" | "backup_
   return apiRequest<{ restored: string; reload_required?: boolean }>("/backup/restore/", {
     method: "POST",
     body: JSON.stringify({ filename, mode }),
+  });
+}
+
+export async function restoreBusinessBackup(filename: string) {
+  return requestAbsolute<BusinessDataImportResult & { restored: string }>(
+    `${API_ROOT}/backup/restore-business/`,
+    {
+      method: "POST",
+      body: JSON.stringify({ filename }),
+    },
+  );
+}
+
+export interface BusinessDataImportResult {
+  detail: string;
+  imported: Record<string, number>;
+  pre_backup?: string | null;
+  accounts_preserved: boolean;
+  mikrotik_configuration_preserved: boolean;
+  reload_required?: boolean;
+}
+
+export async function importBusinessData(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  // L'endpoint exige une session administrateur active, mais il est
+  // volontairement exempté de CSRF pour simplifier l'import depuis la page Sauvegardes.
+  return requestAbsolute<BusinessDataImportResult>(`${API_ROOT}/backup/import-business/`, {
+    method: "POST",
+    body: formData,
   });
 }
 

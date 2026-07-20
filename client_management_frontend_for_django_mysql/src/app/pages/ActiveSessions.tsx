@@ -34,6 +34,8 @@ import {
   Pause,
   Play,
   Copy,
+  Database,
+  Loader2,
 } from "lucide-react";
 
 import { toast } from "sonner";
@@ -52,6 +54,7 @@ import {
 } from "../utils/notificationSounds";
 
 import { cn } from "../components/ui/utils";
+import { createBusinessBackup } from "../utils/api";
 
 function isBackendPausedSession(session: Session) {
   return Boolean(
@@ -138,6 +141,7 @@ export function ActiveSessions() {
   const [sessionType, setSessionType] = useState<SessionType>("open");
   const [plannedDuration, setPlannedDuration] = useState<number>(60);
   const [loading, setLoading] = useState(false);
+  const [backupCreating, setBackupCreating] = useState(false);
 
   const [elapsedSecondsById, setElapsedSecondsById] = useState<
     Record<string, number>
@@ -877,6 +881,19 @@ export function ActiveSessions() {
     }
   };
 
+  const handleQuickBusinessBackup = async () => {
+    setBackupCreating(true);
+    try {
+      const result = await createBusinessBackup();
+      toast.success(`Sauvegarde créée : ${result.filename}`);
+    } catch (error) {
+      console.error("Erreur sauvegarde métier:", error);
+      toast.error(error instanceof Error ? error.message : "Impossible de créer la sauvegarde");
+    } finally {
+      setBackupCreating(false);
+    }
+  };
+
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <div className="mb-8 flex items-center justify-between gap-4">
@@ -892,13 +909,28 @@ export function ActiveSessions() {
           </p>
         </div>
 
-        <Button
-          onClick={() => setIsNewSessionOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700"
-        >
-          <Plus className="w-5 h-5 mr-2" />
-          Nouvelle session
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void handleQuickBusinessBackup()}
+            disabled={backupCreating}
+          >
+            {backupCreating ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Database className="w-4 h-4 mr-2" />
+            )}
+            Sauvegarder les données
+          </Button>
+          <Button
+            onClick={() => setIsNewSessionOpen(true)}
+            className="bg-blue-600 hover:bg-blue-700"
+          >
+            <Plus className="w-5 h-5 mr-2" />
+            Nouvelle session
+          </Button>
+        </div>
       </div>
 
       {activeSessions.length === 0 ? (

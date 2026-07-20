@@ -8,7 +8,13 @@ import { Label } from "./ui/label";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
 
-function LoginScreen({ onLogin, loading }: { onLogin: (username: string, password: string) => Promise<void>; loading: boolean }) {
+function LoginScreen({
+  onLogin,
+  loading,
+}: {
+  onLogin: (username: string, password: string) => Promise<void>;
+  loading: boolean;
+}) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
@@ -43,6 +49,7 @@ function LoginScreen({ onLogin, loading }: { onLogin: (username: string, passwor
             {loading ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Connexion...</> : "Se connecter"}
           </Button>
         </form>
+
       </div>
     </div>
   );
@@ -70,6 +77,7 @@ export function Layout() {
     { path: "/sales", icon: ShoppingCart, label: "Ventes produits" },
     { path: "/sales-history", icon: ListVideo, label: "Historique achats" },
     { path: "/history", icon: History, label: "Historique sessions" },
+    { path: "/backups", icon: Database, label: "Sauvegardes" },
     { path: "/notifications", icon: Bell, label: "Notifications" },
   ];
 
@@ -118,8 +126,14 @@ export function Layout() {
     );
   }
 
+
   if (!isAuthenticated) {
-    return <LoginScreen onLogin={handleLogin} loading={submitting} />;
+    return (
+      <LoginScreen
+        onLogin={handleLogin}
+        loading={submitting}
+      />
+    );
   }
 
   return (

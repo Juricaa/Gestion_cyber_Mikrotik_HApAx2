@@ -1,6 +1,7 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache mariadb-client zip gzip tzdata bash dos2unix
+RUN --network=host apk add --no-cache mariadb-client zip gzip tzdata bash dos2unix
 
 WORKDIR /backup
 
@@ -14,3 +15,4 @@ RUN sed -i '1s/^\xEF\xBB\xBF//' /usr/local/bin/backup.sh \
     && echo "0 23 * * * /bin/bash /usr/local/bin/backup.sh >> /backup/backup.log 2>&1" > /etc/crontabs/root
 
 CMD ["/bin/bash", "/usr/local/bin/entrypoint.sh"]
+ 

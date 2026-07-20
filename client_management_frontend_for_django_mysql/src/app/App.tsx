@@ -31,7 +31,7 @@ export default function App() {
               <Route path="sales" element={<FilmSales />} />
               <Route path="sales-history" element={<FilmSalesHistory />} />
               <Route path="history" element={<History />} />
-              <Route path="backups" element={<ProtectedRoute adminOnly><BackupPage /></ProtectedRoute>} />
+              <Route path="backups" element={<BackupPage />} />
               <Route path="archives" element={<ProtectedRoute adminOnly><Archives /></ProtectedRoute>} />
               <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
               <Route path="users" element={<ProtectedRoute adminOnly><UserManagement /></ProtectedRoute>} />
